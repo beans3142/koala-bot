@@ -1,17 +1,8 @@
 # 환경변수
 .env
 
-# 데이터 파일
-data.json
-
-# 데이터베이스 파일
-*.db
-*.db-journal
-*.db-wal
-*.db-shm
-
-# 백업 파일
-*_backup_*.db
+# 백업 파일 (선택사항 - 필요시 주석 해제)
+# *_backup_*.db
 
 # 로그 파일
 logs/
