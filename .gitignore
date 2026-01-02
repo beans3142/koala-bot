@@ -1,0 +1,39 @@
+# 환경변수
+.env
+
+# 데이터 파일
+data.json
+
+# 데이터베이스 파일
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# 백업 파일
+*_backup_*.db
+
+# 로그 파일
+logs/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+

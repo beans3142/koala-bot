@@ -1,0 +1,6 @@
+# Discord Bot Token
+# Discord 개발자 포털(https://discord.com/developers/applications)에서 발급받은 봇 토큰을 입력하세요
+# 이 파일을 .env로 복사하고 토큰을 입력하세요
+
+DISCORD_BOT_TOKEN=your_bot_token_here
+
