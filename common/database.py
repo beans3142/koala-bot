@@ -99,6 +99,30 @@ def init_database():
             FOREIGN KEY (assignment_id) REFERENCES assignments(assignment_id)
         )
     ''')
+
+    # 주간 현황 메시지 테이블 (역할 기준)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS weekly_status_messages (
+            role_name TEXT PRIMARY KEY,
+            channel_id TEXT,
+            message_id TEXT,
+            week_start_date TEXT,
+            created_at TEXT
+        )
+    ''')
+
+    # 그룹 주간 현황 메시지 테이블 (그룹 기준)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS group_weekly_status (
+            group_name TEXT PRIMARY KEY,
+            role_name TEXT,
+            channel_id TEXT,
+            message_id TEXT,
+            week_start TEXT,
+            week_end TEXT,
+            last_updated TEXT
+        )
+    ''')
     
     conn.commit()
     conn.close()
@@ -109,6 +133,7 @@ def reset_database():
     cursor = conn.cursor()
     
     # 모든 테이블 삭제
+    cursor.execute('DROP TABLE IF EXISTS weekly_status_messages')
     cursor.execute('DROP TABLE IF EXISTS submissions')
     cursor.execute('DROP TABLE IF EXISTS assignments')
     cursor.execute('DROP TABLE IF EXISTS studies')
@@ -160,6 +185,22 @@ def create_or_update_user(user_id: str, username: str, boj_handle: Optional[str]
     conn.commit()
     conn.close()
 
+# -------------------- 사용자 조회/삭제 --------------------
+
+def get_user_by_boj_handle(boj_handle: str) -> Optional[Dict]:
+    """BOJ 핸들로 사용자 조회"""
+    if not boj_handle:
+        return None
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM users WHERE boj_handle = ?', (boj_handle,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return dict(row)
+    return None
+
+# ==================== 역할 관리 ====================
 # ==================== 역할 관리 ====================
 
 def get_role_token(role_name: str) -> Optional[Dict]:
@@ -224,6 +265,14 @@ def add_user_role(user_id: str, role_name: str):
     conn.commit()
     conn.close()
 
+def remove_user_role(user_id: str, role_name: str):
+    """사용자에게서 역할 제거"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM user_roles WHERE user_id = ? AND role_name = ?', (user_id, role_name))
+    conn.commit()
+    conn.close()
+
 def get_user_roles(user_id: str) -> List[str]:
     """사용자의 역할 목록 가져오기"""
     conn = get_connection()
@@ -234,6 +283,23 @@ def get_user_roles(user_id: str) -> List[str]:
     conn.close()
     
     return [row['role_name'] for row in rows]
+
+def get_role_users(role_name: str) -> List[Dict]:
+    """특정 역할을 가진 사용자 목록 가져오기"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT u.user_id, u.username, u.boj_handle 
+        FROM users u
+        JOIN user_roles ur ON u.user_id = ur.user_id
+        WHERE ur.role_name = ?
+        ORDER BY u.username
+    ''', (role_name,))
+    rows = cursor.fetchall()
+    conn.close()
+    
+    return [dict(row) for row in rows]
 
 # ==================== 블로그 링크 관리 ====================
 
@@ -481,6 +547,109 @@ def get_study_submissions(study_name: str) -> Dict[str, List[Dict]]:
         result[assignment_id].append(submission)
     
     return result
+
+# ==================== 주간 현황 메시지 관리 ====================
+
+def save_weekly_status_message(role_name: str, channel_id: str, message_id: str, week_start_date: str):
+    """주간 현황 메시지 저장"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    now = datetime.now().isoformat()
+    cursor.execute('''
+        INSERT OR REPLACE INTO weekly_status_messages 
+        (role_name, channel_id, message_id, week_start_date, created_at)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (role_name, channel_id, message_id, week_start_date, now))
+    
+    conn.commit()
+    conn.close()
+
+def save_group_weekly_status(group_name: str, role_name: str, channel_id: str,
+                             message_id: str, week_start: str, week_end: str,
+                             last_updated: Optional[str] = None):
+    """그룹 주간 현황 메시지 저장"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    now = last_updated or datetime.now().isoformat()
+    cursor.execute('''
+        INSERT OR REPLACE INTO group_weekly_status
+        (group_name, role_name, channel_id, message_id, week_start, week_end, last_updated)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', (group_name, role_name, channel_id, message_id, week_start, week_end, now))
+    
+    conn.commit()
+    conn.close()
+
+def get_group_weekly_status(group_name: str) -> Optional[Dict]:
+    """그룹 주간 현황 메시지 가져오기 (그룹 이름 기준)"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM group_weekly_status WHERE group_name = ?', (group_name,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if row:
+        return dict(row)
+    return None
+
+def get_group_weekly_status_by_message(channel_id: str, message_id: str) -> Optional[Dict]:
+    """채널/메시지 ID로 그룹 주간 현황 메시지 가져오기"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM group_weekly_status WHERE channel_id = ? AND message_id = ?',
+                   (channel_id, message_id))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if row:
+        return dict(row)
+    return None
+
+def get_all_group_weekly_status() -> List[Dict]:
+    """모든 그룹 주간 현황 메시지 목록 가져오기"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM group_weekly_status')
+    rows = cursor.fetchall()
+    conn.close()
+    
+    return [dict(row) for row in rows]
+
+def delete_group_weekly_status(group_name: str):
+    """그룹 주간 현황 메시지 삭제"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('DELETE FROM group_weekly_status WHERE group_name = ?', (group_name,))
+    conn.commit()
+    conn.close()
+
+def get_weekly_status_message(role_name: str) -> Optional[Dict]:
+    """주간 현황 메시지 가져오기"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM weekly_status_messages WHERE role_name = ?', (role_name,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if row:
+        return dict(row)
+    return None
+
+def delete_weekly_status_message(role_name: str):
+    """주간 현황 메시지 삭제"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('DELETE FROM weekly_status_messages WHERE role_name = ?', (role_name,))
+    conn.commit()
+    conn.close()
 
 # ==================== 호환성 함수 (기존 JSON 방식과 호환) ====================
 

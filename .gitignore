@@ -1,7 +1,11 @@
 # 환경변수
 .env
 
-# 백업 파일 (선택사항 - 필요시 주석 해제)
+# 데이터베이스 파일은 Git에 포함 (private repo, 민감 정보 없음)
+# bot_data.db
+# data.json
+
+# 백업 파일은 Git에 포함 (여러 PC에서 복원 가능)
 # *_backup_*.db
 
 # 로그 파일

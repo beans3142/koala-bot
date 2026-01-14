@@ -3,9 +3,277 @@
 """
 import discord
 from discord.ext import commands
-from datetime import datetime
+from datetime import datetime, timedelta, time
 from common.utils import load_data, save_data
+from common.database import (
+    get_role_users,
+    save_group_weekly_status,
+    get_group_weekly_status,
+    get_group_weekly_status_by_message,
+    get_all_group_weekly_status,
+    delete_group_weekly_status,
+)
+from common.boj_utils import get_weekly_solved_count
+from discord.ext import tasks
 
+def find_role_by_group_name(group_name: str, data: dict) -> str:
+    """그룹 이름으로 역할 이름 찾기 (대소문자/공백 무시)"""
+    target = (group_name or "").strip().lower()
+    studies = data.get('studies', {})
+    for role_name, study_data in studies.items():
+        stored_group = (study_data.get('group_name') or role_name or "").strip().lower()
+        stored_role = (role_name or "").strip().lower()
+        # 그룹 이름 필드 또는 역할 이름(키)과 일치하면 반환
+        if target == stored_group or target == stored_role:
+            return role_name
+    return None
+
+
+# 그룹 주간 현황 자동 갱신용
+_bot_for_group_weekly = None
+
+
+async def update_group_weekly_status(group_name: str, bot_instance):
+    """특정 그룹의 주간 문제풀이 현황 메시지 갱신 (기존 메시지 편집)"""
+    status_info = get_group_weekly_status(group_name)
+    if not status_info:
+        return
+
+    channel_id = int(status_info['channel_id'])
+    message_id = int(status_info['message_id'])
+    role_name = status_info['role_name']
+    week_start = datetime.fromisoformat(status_info['week_start'])
+    week_end = datetime.fromisoformat(status_info['week_end'])
+
+    now = datetime.now()
+    # 기간 밖이면 갱신하지 않음
+    if not (week_start <= now <= week_end):
+        return
+
+    channel = bot_instance.get_channel(channel_id)
+    if not channel:
+        return
+
+    try:
+        message = await channel.fetch_message(message_id)
+    except discord.NotFound:
+        delete_group_weekly_status(group_name)
+        return
+
+    # 최신 데이터 로드
+    data = load_data()
+
+    # 역할을 가진 유저 목록 가져오기
+    users = get_role_users(role_name)
+    if not users:
+        embed = discord.Embed(
+            title=f"📊 '{group_name}' 그룹 백준 문제풀이 현황",
+            description=(
+                f"기간: {week_start.strftime('%Y-%m-%d %H:%M')} ~ {week_end.strftime('%Y-%m-%d %H:%M')}\n"
+                f"마지막 갱신: {now.strftime('%Y-%m-%d %H:%M')}\n"
+                f"(멤버 없음)"
+            ),
+            color=discord.Color.blue(),
+        )
+        await message.edit(embed=embed, view=GroupWeeklyStatusView())
+        return
+
+    # 각 유저의 백준 문제풀이 현황 조회
+    results = []
+    for user_info in users:
+        username = user_info['username']
+        boj_handle = user_info.get('boj_handle')
+
+        if not boj_handle or boj_handle == '미등록':
+            results.append(
+                {
+                    'username': username,
+                    'boj_handle': boj_handle or '미등록',
+                    'solved_count': 0,
+                    'status': '❌ BOJ 핸들 미등록',
+                }
+            )
+            continue
+
+        try:
+            solved_data = await get_weekly_solved_count(boj_handle, week_start, week_end)
+            results.append(
+                {
+                    'username': username,
+                    'boj_handle': boj_handle,
+                    'solved_count': solved_data['count'],
+                    'problems': solved_data.get('problems', []),
+                    'status': '✅' if solved_data['count'] > 0 else '⚠️',
+                }
+            )
+        except Exception as e:
+            results.append(
+                {
+                    'username': username,
+                    'boj_handle': boj_handle,
+                    'solved_count': 0,
+                    'status': f'❌ 오류: {str(e)[:30]}',
+                }
+            )
+
+    # 결과 정렬 (해결한 문제 수 많은 순)
+    results.sort(key=lambda x: x['solved_count'], reverse=True)
+
+    embed = discord.Embed(
+        title=f"📊 '{group_name}' 그룹 백준 문제풀이 현황",
+        description=(
+            f"기간: {week_start.strftime('%Y-%m-%d %H:%M')} ~ {week_end.strftime('%Y-%m-%d %H:%M')}\n"
+            f"마지막 갱신: {now.strftime('%Y-%m-%d %H:%M')}"
+        ),
+        color=discord.Color.blue(),
+    )
+
+    member_list = []
+    total_solved = 0
+    for i, result in enumerate(results[:25], 1):
+        status_icon = result['status']
+        username = result['username']
+        boj_handle = result['boj_handle']
+        solved_count = result['solved_count']
+        total_solved += solved_count
+
+        rank_label = {1: "👑", 2: "🥈", 3: "🥉"}.get(i, f"{i}.")
+
+        if boj_handle == '미등록':
+            member_list.append(f"{rank_label} {username} - {status_icon} BOJ 핸들 미등록")
+        else:
+            problems = result.get('problems', [])
+            if solved_count == 0:
+                member_list.append(f"{rank_label} {boj_handle} - {status_icon} 0개")
+            else:
+                problems_sorted = sorted(problems)
+                if len(problems_sorted) <= 15:
+                    problems_str = ", ".join(map(str, problems_sorted))
+                    member_list.append(
+                        f"{rank_label} {boj_handle} - {status_icon} {solved_count}개 [{problems_str}]"
+                    )
+                else:
+                    problems_str = ", ".join(map(str, problems_sorted[:15]))
+                    remaining = len(problems_sorted) - 15
+                    member_list.append(
+                        f"{rank_label} {boj_handle} - {status_icon} {solved_count}개 [{problems_str}, ... 외 {remaining}개]"
+                    )
+
+    if len(results) > 25:
+        member_list.append(f"\n... 외 {len(results) - 25}명")
+
+    embed.add_field(
+        name="멤버별 문제풀이 현황",
+        value="\n".join(member_list) if member_list else "멤버 없음",
+        inline=False,
+    )
+
+    active_members = len([r for r in results if r['solved_count'] > 0])
+    embed.add_field(
+        name="📈 통계",
+        value=(
+            f"총 멤버: {len(results)}명\n"
+            f"문제 풀은 멤버: {active_members}명\n"
+            f"총 해결한 문제: {total_solved}개"
+        ),
+        inline=False,
+    )
+
+    # DB에 마지막 갱신 시간 저장
+    save_group_weekly_status(
+        group_name,
+        role_name,
+        str(channel_id),
+        str(message_id),
+        week_start.isoformat(),
+        week_end.isoformat(),
+        now.isoformat(),
+    )
+
+    await message.edit(embed=embed, view=GroupWeeklyStatusView())
+
+
+@tasks.loop(time=[time(hour=h, minute=0) for h in range(0, 24)])
+async def group_weekly_auto_update():
+    """매시 정각 그룹 주간 현황 자동 갱신"""
+    global _bot_for_group_weekly
+    if not _bot_for_group_weekly:
+        return
+
+    now = datetime.now()
+    for info in get_all_group_weekly_status():
+        week_start = datetime.fromisoformat(info['week_start'])
+        week_end = datetime.fromisoformat(info['week_end'])
+
+        if week_start <= now <= week_end:
+            await update_group_weekly_status(info['group_name'], _bot_for_group_weekly)
+        elif now > week_end:
+            # 기간이 지난 그룹은 DB에서 정리 (메시지는 그대로 둠)
+            delete_group_weekly_status(info['group_name'])
+
+
+class GroupWeeklyStatusView(discord.ui.View):
+    """그룹 주간 현황 수동 갱신 버튼 View (persistent)"""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item):
+        # 버튼 콜백에서 예외가 나면 "상호작용 실패"처럼 보일 수 있어서 사용자에게 안내
+        try:
+            msg = f"❌ 갱신 처리 중 오류가 발생했습니다: {type(error).__name__}: {error}"
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except Exception:
+            pass
+
+    @discord.ui.button(
+        label="갱신", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="group_weekly_refresh"
+    )
+    async def refresh_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # 메시지 기준으로 그룹 찾기
+        info = get_group_weekly_status_by_message(str(interaction.channel.id), str(interaction.message.id))
+        if not info:
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ 이 메시지는 주간 현황으로 등록되어 있지 않습니다.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ 이 메시지는 주간 현황으로 등록되어 있지 않습니다.", ephemeral=True)
+            return
+
+        week_start = datetime.fromisoformat(info['week_start'])
+        week_end = datetime.fromisoformat(info['week_end'])
+        now = datetime.now()
+
+        if not (week_start <= now <= week_end):
+            if interaction.response.is_done():
+                await interaction.followup.send("⚠️ 이 메시지의 기간이 종료되어 더 이상 갱신할 수 없습니다.", ephemeral=True)
+            else:
+                await interaction.response.send_message("⚠️ 이 메시지의 기간이 종료되어 더 이상 갱신할 수 없습니다.", ephemeral=True)
+            return
+
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+        await update_group_weekly_status(info['group_name'], interaction.client)
+        await interaction.followup.send("✅ 주간 현황이 갱신되었습니다.", ephemeral=True)
+
+
+def register_group_weekly_views(bot):
+    """봇 재시작 후에도 그룹 주간 현황 버튼이 작동하도록 persistent view 등록"""
+    try:
+        bot.add_view(GroupWeeklyStatusView())
+        print(f"[OK] 그룹 주간 현황 persistent view 등록 완료 (custom_id: group_weekly_refresh)")
+    except Exception as e:
+        print(f"[ERROR] 그룹 주간 현황 persistent view 등록 실패: {e}")
+
+
+def start_group_weekly_scheduler(bot):
+    """그룹 주간 현황 자동 갱신 스케줄러 시작"""
+    global _bot_for_group_weekly
+    _bot_for_group_weekly = bot
+    if not group_weekly_auto_update.is_running():
+        group_weekly_auto_update.start()
 def setup(bot):
     """봇에 명령어 등록"""
     
@@ -42,29 +310,28 @@ def setup(bot):
             await ctx.send(f"🔄 '{group_name}' 그룹을 생성하는 중...")
             category = await ctx.guild.create_category(group_name, overwrites=overwrites)
             
-            # 텍스트 채널 생성
-            text_channels = ['채팅', '자유', '해설', '과제제출']
+            # 공지 채널 생성 (Announcement Channel) - 맨 앞에
             created_channels = []
-            
-            for channel_name in text_channels:
-                channel = await category.create_text_channel(channel_name, overwrites=overwrites)
-                created_channels.append(channel.mention)
-            
-            # 공지 채널 생성 (Announcement Channel)
             try:
                 announcement_channel = await category.create_text_channel(
                     '공지',
                     type=discord.ChannelType.news,  # 공지 채널 타입
                     overwrites=overwrites
                 )
-                created_channels.insert(0, announcement_channel.mention)  # 맨 앞에 추가
+                created_channels.append(announcement_channel.mention)
             except:
                 # 공지 채널 생성 실패 시 일반 텍스트 채널로 생성
                 announcement_channel = await category.create_text_channel('공지', overwrites=overwrites)
-                created_channels.insert(0, announcement_channel.mention)
+                created_channels.append(announcement_channel.mention)
+            
+            # 텍스트 채널 생성
+            text_channels = ['풀이현황', '자유', '해설', '과제제출']
+            for channel_name in text_channels:
+                channel = await category.create_text_channel(channel_name, overwrites=overwrites)
+                created_channels.append(channel.mention)
             
             # 음성 채널 생성
-            voice_channels = ['자유1', '자유2', '자유3']
+            voice_channels = ['자유1', '자유2']
             for channel_name in voice_channels:
                 channel = await category.create_voice_channel(channel_name, overwrites=overwrites)
                 created_channels.append(channel.mention)
@@ -78,13 +345,13 @@ def setup(bot):
             
             embed.add_field(
                 name="생성된 텍스트 채널",
-                value="\n".join([f"• {ch}" for ch in created_channels[:5]]),  # 공지 + 4개 텍스트 채널
+                value="\n".join([f"• {ch}" for ch in created_channels[:5]]),  # 공지 + 풀이현황 + 자유 + 해설 + 과제제출
                 inline=False
             )
             
             embed.add_field(
                 name="생성된 음성 채널",
-                value="\n".join([f"• {ch}" for ch in created_channels[5:]]),  # 나머지 음성 채널
+                value="\n".join([f"• {ch}" for ch in created_channels[5:]]),  # 자유1 + 자유2
                 inline=False
             )
             
@@ -111,6 +378,256 @@ def setup(bot):
             await ctx.send(f"❌ 채널 생성 중 오류가 발생했습니다: {str(e)}")
         except Exception as e:
             await ctx.send(f"❌ 오류가 발생했습니다: {str(e)}")
+
+    @group_group.command(name='주간현황설정')
+    @commands.has_permissions(administrator=True)
+    async def group_weekly_status_setup(ctx, *, group_name: str):
+        """그룹 주간 문제풀이 현황 메시지 설정 (관리자 전용)
+        - 해당 채널에 고정 메시지 1개 생성
+        - 월요일 00시 ~ 다음 주 월요일 01시까지 정각 자동 갱신 + 수동 버튼 갱신
+        """
+        data = load_data()
+
+        # 그룹 이름으로 역할 찾기
+        role_name = find_role_by_group_name(group_name, data)
+        if not role_name:
+            await ctx.send(
+                f"❌ '{group_name}' 그룹을 찾을 수 없습니다.\n💡 `/그룹 목록` 명령어로 등록된 그룹을 확인하세요."
+            )
+            return
+
+        # 역할 등록 여부 확인
+        if role_name not in data.get('role_tokens', {}):
+            await ctx.send(f"❌ '{group_name}' 그룹에 연결된 역할('{role_name}')이 등록되지 않았습니다.")
+            return
+
+        # 기준 주 계산 (명령어 실행일이 속한 주의 월요일 00시 ~ 다음 주 월요일 01시)
+        today = datetime.now()
+        days_since_monday = today.weekday()  # 0=월요일
+        week_start = today - timedelta(days=days_since_monday)
+        week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_end = week_start + timedelta(days=7, hours=1)
+
+        # 초기 임베드
+        embed = discord.Embed(
+            title=f"📊 '{group_name}' 그룹 백준 문제풀이 현황",
+            description=(
+                f"기간: {week_start.strftime('%Y-%m-%d %H:%M')} ~ {week_end.strftime('%Y-%m-%d %H:%M')}\n"
+                f"마지막 갱신: -"
+            ),
+            color=discord.Color.blue(),
+        )
+
+        msg = await ctx.send(embed=embed, view=GroupWeeklyStatusView())
+
+        # DB에 저장
+        save_group_weekly_status(
+            group_name,
+            role_name,
+            str(ctx.channel.id),
+            str(msg.id),
+            week_start.isoformat(),
+            week_end.isoformat(),
+        )
+
+        # 즉시 1회 갱신
+        await update_group_weekly_status(group_name, ctx.bot)
+        await ctx.send(
+            f"✅ '{group_name}' 그룹의 주간 문제풀이 현황 메시지가 설정되었습니다.\n"
+            f"📅 매시 정각 자동 갱신, 버튼으로 수동 갱신 가능합니다."
+        )
+
+    @group_group.command(name='주간현황목록')
+    @commands.has_permissions(administrator=True)
+    async def group_weekly_status_list(ctx):
+        """생성된 그룹 주간 현황 메시지 목록 확인 (관리자 전용)"""
+        from common.database import get_all_group_weekly_status
+        
+        all_status = get_all_group_weekly_status()
+        
+        if not all_status:
+            await ctx.send("❌ 생성된 주간 현황 메시지가 없습니다.")
+            return
+        
+        embed = discord.Embed(
+            title="📋 생성된 그룹 주간 현황 목록",
+            color=discord.Color.blue()
+        )
+        
+        status_list = []
+        now = datetime.now()
+        for info in all_status:
+            group_name = info['group_name']
+            channel_id = info['channel_id']
+            week_start = datetime.fromisoformat(info['week_start'])
+            week_end = datetime.fromisoformat(info['week_end'])
+            
+            # 채널 정보 가져오기
+            channel = ctx.guild.get_channel(int(channel_id))
+            channel_name = channel.mention if channel else f"<#{channel_id}>"
+            
+            # 기간 상태 확인
+            if now < week_start:
+                status = "⏳ 시작 전"
+            elif week_start <= now <= week_end:
+                status = "🟢 진행 중"
+            else:
+                status = "🔴 종료됨"
+            
+            status_list.append(
+                f"**{group_name}**\n"
+                f"채널: {channel_name}\n"
+                f"기간: {week_start.strftime('%Y-%m-%d %H:%M')} ~ {week_end.strftime('%Y-%m-%d %H:%M')}\n"
+                f"상태: {status}\n"
+            )
+        
+        embed.description = "\n".join(status_list)
+        await ctx.send(embed=embed)
+
+    @group_group.command(name='주간현황삭제')
+    @commands.has_permissions(administrator=True)
+    async def group_weekly_status_delete(ctx, *, group_name: str):
+        """그룹 주간 현황 메시지 삭제 (관리자 전용)
+        - DB에서 정보만 삭제 (메시지는 채널에 그대로 남음)
+        """
+        from common.database import get_group_weekly_status, delete_group_weekly_status
+        
+        info = get_group_weekly_status(group_name)
+        if not info:
+            await ctx.send(f"❌ '{group_name}' 그룹의 주간 현황 메시지를 찾을 수 없습니다.")
+            return
+        
+        # DB에서 삭제
+        delete_group_weekly_status(group_name)
+        
+        channel = ctx.guild.get_channel(int(info['channel_id']))
+        channel_name = channel.mention if channel else f"<#{info['channel_id']}>"
+        
+        await ctx.send(
+            f"✅ '{group_name}' 그룹의 주간 현황 메시지 정보가 삭제되었습니다.\n"
+            f"📝 메시지는 {channel_name}에 그대로 남아있습니다."
+        )
+
+    @group_group.command(name='문제풀이현황')
+    @commands.has_permissions(administrator=True)
+    async def group_problem_status(ctx, *, group_name: str):
+        """특정 그룹 멤버들의 최근 7일(월~일) 백준 문제풀이 현황 (관리자 전용)"""
+        data = load_data()
+        
+        # 그룹 이름으로 역할 찾기
+        role_name = find_role_by_group_name(group_name, data)
+        if not role_name:
+            await ctx.send(f"❌ '{group_name}' 그룹을 찾을 수 없습니다.\n💡 `/그룹 목록` 명령어로 등록된 그룹을 확인하세요.")
+            return
+        
+        # 역할이 등록되어 있는지 확인
+        if role_name not in data.get('role_tokens', {}):
+            await ctx.send(f"❌ '{group_name}' 그룹에 연결된 역할('{role_name}')이 등록되지 않았습니다.")
+            return
+        
+        # 역할을 가진 유저 목록 가져오기
+        users = get_role_users(role_name)
+        
+        if not users:
+            await ctx.send(f"❌ '{group_name}' 그룹에 멤버가 없습니다.")
+            return
+        
+        # 이번 주 월요일~일요일 계산
+        today = datetime.now()
+        days_since_monday = today.weekday()
+        monday = today - timedelta(days=days_since_monday)
+        monday = monday.replace(hour=0, minute=0, second=0, microsecond=0)
+        sunday = monday + timedelta(days=6, hours=23, minutes=59, seconds=59)
+        
+        await ctx.send(f"🔄 최근 7일간(월~일) 백준 문제풀이 현황을 조회하는 중...\n📅 기간: {monday.strftime('%Y-%m-%d')} ~ {sunday.strftime('%Y-%m-%d')}")
+        
+        # 각 유저의 백준 문제풀이 현황 조회
+        results = []
+        for user_info in users:
+            username = user_info['username']
+            boj_handle = user_info.get('boj_handle')
+            
+            if not boj_handle or boj_handle == '미등록':
+                results.append({
+                    'username': username,
+                    'boj_handle': boj_handle or '미등록',
+                    'solved_count': 0,
+                    'status': '❌ BOJ 핸들 미등록'
+                })
+                continue
+            
+            # 백준에서 최근 7일간 해결한 문제 수 조회
+            try:
+                solved_data = await get_weekly_solved_count(boj_handle, monday, sunday)
+                results.append({
+                    'username': username,
+                    'boj_handle': boj_handle,
+                    'solved_count': solved_data['count'],
+                    'problems': solved_data.get('problems', []),
+                    'status': '✅' if solved_data['count'] > 0 else '⚠️'
+                })
+            except Exception as e:
+                results.append({
+                    'username': username,
+                    'boj_handle': boj_handle,
+                    'solved_count': 0,
+                    'status': f'❌ 오류: {str(e)[:30]}'
+                })
+        
+        # 결과 정렬 (해결한 문제 수 많은 순)
+        results.sort(key=lambda x: x['solved_count'], reverse=True)
+        
+        # 임베드 생성
+        embed = discord.Embed(
+            title=f"📊 '{group_name}' 그룹 백준 문제풀이 현황",
+            description=f"기간: {monday.strftime('%Y-%m-%d')} ~ {sunday.strftime('%Y-%m-%d')} (월~일)",
+            color=discord.Color.blue()
+        )
+        
+        # 멤버별 현황 표시 (최대 25명, Discord 임베드 제한)
+        member_list = []
+        total_solved = 0
+        for i, result in enumerate(results[:25], 1):
+            status_icon = result['status']
+            username = result['username']
+            boj_handle = result['boj_handle']
+            solved_count = result['solved_count']
+            total_solved += solved_count
+            
+            if boj_handle == '미등록':
+                member_list.append(f"{i}. {username} - {status_icon} BOJ 핸들 미등록")
+            else:
+                problems = result.get('problems', [])
+                if solved_count == 0:
+                    member_list.append(f"{i}. {boj_handle} - {status_icon} 0개")
+                else:
+                    problems_sorted = sorted(problems)
+                    if len(problems_sorted) <= 15:
+                        problems_str = ", ".join(map(str, problems_sorted))
+                        member_list.append(f"{i}. {boj_handle} - {status_icon} {solved_count}개 [{problems_str}]")
+                    else:
+                        problems_str = ", ".join(map(str, problems_sorted[:15]))
+                        remaining = len(problems_sorted) - 15
+                        member_list.append(f"{i}. {boj_handle} - {status_icon} {solved_count}개 [{problems_str}, ... 외 {remaining}개]")
+        
+        if len(results) > 25:
+            member_list.append(f"\n... 외 {len(results) - 25}명")
+        
+        embed.add_field(
+            name="멤버별 문제풀이 현황",
+            value="\n".join(member_list) if member_list else "멤버 없음",
+            inline=False
+        )
+        
+        # 통계
+        active_members = len([r for r in results if r['solved_count'] > 0])
+        embed.add_field(
+            name="📈 통계",
+            value=f"총 멤버: {len(results)}명\n문제 풀은 멤버: {active_members}명\n총 해결한 문제: {total_solved}개",
+            inline=False
+        )
+        
+        await ctx.send(embed=embed)
 
     @group_group.command(name='제출현황')
     @commands.has_permissions(administrator=True)

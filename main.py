@@ -12,10 +12,12 @@ import sys
 from dotenv import load_dotenv
 
 # 현재 디렉토리를 Python 경로에 추가
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+script_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, script_dir)
 
-# 환경변수 로드
-load_dotenv()
+# 환경변수 로드 (스크립트 파일 위치 기준으로 .env 파일 찾기)
+env_path = os.path.join(script_dir, '.env')
+load_dotenv(env_path)
 
 # 로거 설정
 from common.logger import setup_logger
@@ -27,7 +29,22 @@ intents.message_content = True
 intents.members = True
 intents.guilds = True
 
-bot = commands.Bot(command_prefix='/', intents=intents)
+
+class KoalaBot(commands.Bot):
+    async def setup_hook(self) -> None:
+        """
+        discord.py가 내부 이벤트 루프를 준비한 뒤 호출됨.
+        persistent view 등록은 여기서 해야 'no running event loop'가 나지 않음.
+        """
+        from domain.role import register_persistent_view
+        from domain.channel import register_group_weekly_views
+
+        register_persistent_view(self)
+        register_group_weekly_views(self)
+        print("[OK] Persistent views 등록 완료")
+
+
+bot = KoalaBot(command_prefix='/', intents=intents)
 
 @bot.event
 async def on_ready():
@@ -36,6 +53,13 @@ async def on_ready():
     print(f'{bot.user}로 로그인했습니다!')
     print(f'서버 수: {len(bot.guilds)}')
     await bot.change_presence(activity=discord.Game(name="알고리즘 동아리 관리"))
+    
+    # 스케줄러는 이벤트 루프가 준비된 뒤 시작
+    from domain.role import start_weekly_status_scheduler
+    from domain.channel import start_group_weekly_scheduler
+
+    start_weekly_status_scheduler(bot)
+    start_group_weekly_scheduler(bot)
 
 @bot.event
 async def on_command_error(ctx, error):
@@ -46,6 +70,17 @@ async def on_command_error(ctx, error):
         await ctx.send(f"❌ 명령어에 필요한 인자가 누락되었습니다. `/도움말`을 확인해주세요.")
     else:
         await ctx.send(f"❌ 오류가 발생했습니다: {str(error)}")
+
+@bot.event
+async def on_interaction(interaction: discord.Interaction):
+    """인터랙션 에러 핸들링"""
+    # NOTE:
+    # discord.py의 View/Modal 콜백이 interaction에 응답(ACK)하는 책임을 집니다.
+    # 여기서 모든 component interaction을 선-ACK(defer)하면, 각 버튼 콜백에서
+    # interaction.response.* 를 호출할 때 "Interaction has already been acknowledged(40060)"
+    # 가 발생해 버튼이 동작하지 않습니다.
+    # 따라서 전역적으로 defer 하지 않습니다.
+    return
 
 # 모듈 로드
 def load_modules():

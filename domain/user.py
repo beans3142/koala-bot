@@ -38,30 +38,54 @@ def setup(bot):
     @bot.command(name='내정보')
     async def my_info(ctx):
         """내 정보 확인"""
-        data = load_data()
+        from common.database import get_user_roles
+        
         user_id = str(ctx.author.id)
         
-        if user_id not in data['users']:
-            await ctx.send("❌ 등록된 정보가 없습니다. `/유저등록` 명령어로 먼저 등록해주세요.")
+        # DB에서 사용자 정보 가져오기
+        from common.database import get_user
+        user_db = get_user(user_id)
+        
+        if not user_db:
+            await ctx.send("❌ 등록된 정보가 없습니다. `/역할 등록` 명령어로 먼저 등록해주세요.")
             return
         
-        user_data = data['users'][user_id]
         embed = discord.Embed(
             title=f"{ctx.author.display_name}님의 정보",
             color=discord.Color.blue()
         )
         
-        if user_data.get('boj_handle'):
-            embed.add_field(name="백준 핸들", value=user_data['boj_handle'], inline=True)
+        # 백준 핸들 (백준 닉네임)
+        boj_handle = user_db.get('boj_handle')
+        if boj_handle:
+            embed.add_field(name="백준 핸들", value=boj_handle, inline=True)
         else:
             embed.add_field(name="백준 핸들", value="미등록", inline=True)
         
-        embed.add_field(name="제출한 링크 수", value=f"{len(user_data.get('tistory_links', []))}개", inline=True)
-        
-        # 등록된 역할 표시
-        roles = user_data.get('roles', [])
+        # 참여 그룹 (역할) 목록
+        roles = get_user_roles(user_id)
         if roles:
-            embed.add_field(name="등록된 역할", value=", ".join(roles), inline=False)
+            # 그룹 이름도 함께 표시
+            data = load_data()
+            studies = data.get('studies', {})
+            group_info = []
+            for role_name in roles:
+                study_data = studies.get(role_name, {})
+                group_name = study_data.get('group_name', role_name)
+                group_info.append(f"{group_name} ({role_name})")
+            
+            embed.add_field(
+                name="참여 그룹",
+                value="\n".join(group_info) if group_info else ", ".join(roles),
+                inline=False
+            )
+        else:
+            embed.add_field(name="참여 그룹", value="없음", inline=False)
+        
+        # 제출한 링크 수 (기존 JSON 데이터에서)
+        data = load_data()
+        user_data = data.get('users', {}).get(user_id, {})
+        embed.add_field(name="제출한 링크 수", value=f"{len(user_data.get('tistory_links', []))}개", inline=True)
         
         await ctx.send(embed=embed)
 

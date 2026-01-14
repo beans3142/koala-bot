@@ -163,6 +163,247 @@ async def check_problem_solved(baekjoon_id: str, problem_id: int) -> bool:
     result = await check_problem_solved_from_status(baekjoon_id, problem_id)
     return result['solved'] if result else False
 
+async def get_weekly_solved_count(baekjoon_id: str, start_date: datetime, end_date: datetime) -> Dict:
+    """
+    특정 기간 동안 해결한 문제 수 및 문제 목록 가져오기
+    
+    Args:
+        baekjoon_id: 백준 아이디
+        start_date: 시작 날짜 (datetime)
+        end_date: 종료 날짜 (datetime)
+    
+    Returns:
+        {
+            'count': int,  # 해결한 문제 수
+            'problems': List[int]  # 해결한 문제 번호 목록
+        }
+    """
+    try:
+        solved_problems = set()
+        page = 1
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        async with aiohttp.ClientSession(headers=headers) as session:
+            # 최대 20페이지까지 확인 (최근 2000개 제출)
+            for page in range(1, 21):
+                # result_id=4는 "맞았습니다" 결과만 필터링
+                url = f"https://www.acmicpc.net/status?user_id={baekjoon_id}&result_id=4&page={page}"
+                
+                async with session.get(url) as response:
+                    if response.status != 200:
+                        break
+                    
+                    html = await response.text()
+                    soup = BeautifulSoup(html, 'html.parser')
+                    
+                    status_table = soup.find('table', id='status-table')
+                    if not status_table:
+                        break
+                    
+                    tbody = status_table.find('tbody')
+                    if not tbody:
+                        break
+                    
+                    rows = tbody.find_all('tr')
+                    if not rows:
+                        break
+                    
+                    # 이 페이지의 모든 제출이 기간을 벗어나면 중단
+                    page_has_valid = False
+                    
+                    for tr in rows:
+                        # 결과 확인 (이미 result_id=4로 필터링했지만 다시 확인)
+                        result_td = tr.find('td', class_='result')
+                        if not result_td:
+                            continue
+                        
+                        result_text = result_td.get_text(strip=True)
+                        if '맞았습니다' not in result_text and '정답' not in result_text:
+                            continue
+                        
+                        # 제출 시간 찾기
+                        time_td = tr.find('td', class_='real-time-update')
+                        if not time_td:
+                            time_elem = tr.find('a', class_='real-time-update')
+                            if time_elem and time_elem.get('title'):
+                                time_str = time_elem.get('title')
+                            else:
+                                continue
+                        else:
+                            time_str = time_td.get_text(strip=True)
+                        
+                        # 시간 파싱
+                        try:
+                            if '-' in time_str and ':' in time_str:
+                                # "2024-01-01 12:34:56" 형식
+                                submitted_dt = datetime.strptime(time_str, '%Y-%m-%d %H:%M:%S')
+                            else:
+                                # 상대 시간 파싱 ("~초 전", "~분 전", "~시간 전", "~일 전")
+                                submitted_dt = None
+                                now = datetime.now()
+                                
+                                if '초 전' in time_str:
+                                    seconds_match = re.search(r'(\d+)초\s*전', time_str)
+                                    if seconds_match:
+                                        seconds = int(seconds_match.group(1))
+                                        submitted_dt = now - timedelta(seconds=seconds)
+                                elif '분 전' in time_str:
+                                    minutes_match = re.search(r'(\d+)분\s*전', time_str)
+                                    if minutes_match:
+                                        minutes = int(minutes_match.group(1))
+                                        submitted_dt = now - timedelta(minutes=minutes)
+                                elif '시간 전' in time_str:
+                                    hours_match = re.search(r'(\d+)시간\s*전', time_str)
+                                    if hours_match:
+                                        hours = int(hours_match.group(1))
+                                        submitted_dt = now - timedelta(hours=hours)
+                                elif '일 전' in time_str:
+                                    days_match = re.search(r'(\d+)일\s*전', time_str)
+                                    if days_match:
+                                        days = int(days_match.group(1))
+                                        submitted_dt = now - timedelta(days=days)
+                                
+                                if submitted_dt is None:
+                                    # 파싱 실패 시 스킵
+                                    continue
+                        except:
+                            continue
+                        
+                        # 기간 확인
+                        if start_date <= submitted_dt <= end_date:
+                            # 문제 번호 찾기
+                            problem_link = tr.find('a', href=re.compile(r'/problem/\d+'))
+                            if problem_link:
+                                match = re.search(r'/problem/(\d+)', problem_link.get('href', ''))
+                                if match:
+                                    problem_id = int(match.group(1))
+                                    solved_problems.add(problem_id)
+                                    page_has_valid = True
+                        elif submitted_dt < start_date:
+                            # 시작일 이전이면 더 이상 확인할 필요 없음
+                            return {
+                                'count': len(solved_problems),
+                                'problems': sorted(list(solved_problems))
+                            }
+                    
+                    # 이 페이지에 유효한 제출이 없으면 더 이상 확인하지 않음
+                    if not page_has_valid:
+                        break
+        
+        return {
+            'count': len(solved_problems),
+            'problems': sorted(list(solved_problems))
+        }
+    except Exception as e:
+        print(f"주간 해결한 문제 수 조회 오류: {e}")
+        return {'count': 0, 'problems': []}
+
+async def get_recent_solved_count(baekjoon_id: str, start_date: datetime, end_date: datetime) -> int:
+    """
+    특정 기간 동안 해결한 문제 수 가져오기
+    
+    Args:
+        baekjoon_id: 백준 아이디
+        start_date: 시작 날짜 (datetime)
+        end_date: 종료 날짜 (datetime)
+    
+    Returns:
+        해결한 문제 수
+    """
+    try:
+        # 백준 status 페이지에서 최근 제출 내역 확인
+        # 여러 페이지를 확인해야 할 수 있으므로 최근 100개 정도 확인
+        solved_problems = set()
+        page = 1
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        async with aiohttp.ClientSession(headers=headers) as session:
+            # 최대 10페이지까지 확인 (최근 1000개 제출)
+            for page in range(1, 11):
+                url = f"https://www.acmicpc.net/status?user_id={baekjoon_id}&result_id=4&page={page}"
+                # result_id=4는 "맞았습니다" 결과
+                
+                async with session.get(url) as response:
+                    if response.status != 200:
+                        break
+                    
+                    html = await response.text()
+                    soup = BeautifulSoup(html, 'html.parser')
+                    
+                    # status 테이블 찾기
+                    status_table = soup.find('table', id='status-table')
+                    if not status_table:
+                        break
+                    
+                    tbody = status_table.find('tbody')
+                    if not tbody:
+                        break
+                    
+                    rows = tbody.find_all('tr')
+                    if not rows:
+                        break
+                    
+                    # 이 페이지의 모든 제출이 기간을 벗어나면 중단
+                    page_has_valid = False
+                    
+                    for tr in rows:
+                        # 결과 확인
+                        result_td = tr.find('td', class_='result')
+                        if not result_td:
+                            continue
+                        
+                        result_text = result_td.get_text(strip=True)
+                        if '맞았습니다' not in result_text:
+                            continue
+                        
+                        # 제출 시간 찾기
+                        time_td = tr.find('td', class_='real-time-update')
+                        if not time_td:
+                            time_elem = tr.find('a', class_='real-time-update')
+                            if time_elem and time_elem.get('title'):
+                                time_str = time_elem.get('title')
+                            else:
+                                continue
+                        else:
+                            time_str = time_td.get_text(strip=True)
+                        
+                        # 시간 파싱
+                        try:
+                            if '-' in time_str and ':' in time_str:
+                                # "2024-01-01 12:34:56" 형식
+                                submitted_dt = datetime.strptime(time_str, '%Y-%m-%d %H:%M:%S')
+                            else:
+                                # 상대 시간인 경우 현재 시간 사용 (정확하지 않을 수 있음)
+                                continue
+                        except:
+                            continue
+                        
+                        # 기간 확인
+                        if start_date <= submitted_dt <= end_date:
+                            # 문제 번호 찾기
+                            problem_link = tr.find('a', href=re.compile(r'/problem/\d+'))
+                            if problem_link:
+                                match = re.search(r'/problem/(\d+)', problem_link.get('href', ''))
+                                if match:
+                                    problem_id = int(match.group(1))
+                                    solved_problems.add(problem_id)
+                                    page_has_valid = True
+                    
+                    # 이 페이지에 유효한 제출이 없으면 더 이상 확인하지 않음
+                    if not page_has_valid:
+                        break
+        
+        return len(solved_problems)
+    except Exception as e:
+        print(f"최근 해결한 문제 수 조회 오류: {e}")
+        return 0
+
 async def check_problem_solved_from_status(baekjoon_id: str, problem_id: int) -> Optional[Dict]:
     """
     BOJ status 페이지에서 문제 해결 여부 및 제출 시간 확인
