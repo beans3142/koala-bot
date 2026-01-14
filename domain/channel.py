@@ -146,18 +146,23 @@ async def update_group_weekly_status(group_name: str, bot_instance):
             if solved_count == 0:
                 member_list.append(f"{rank_label} {boj_handle} - {status_icon} 0개")
             else:
-                problems_sorted = sorted(problems)
-                if len(problems_sorted) <= 15:
-                    problems_str = ", ".join(map(str, problems_sorted))
-                    member_list.append(
-                        f"{rank_label} {boj_handle} - {status_icon} {solved_count}개 [{problems_str}]"
-                    )
+                # solved.ac 기반 계산에서는 문제 번호 목록이 없을 수 있으므로,
+                # 목록이 비어 있으면 개수만 표시하고, 있을 때만 대괄호로 문제 번호를 보여준다.
+                if not problems:
+                    member_list.append(f"{rank_label} {boj_handle} - {status_icon} {solved_count}개")
                 else:
-                    problems_str = ", ".join(map(str, problems_sorted[:15]))
-                    remaining = len(problems_sorted) - 15
-                    member_list.append(
-                        f"{rank_label} {boj_handle} - {status_icon} {solved_count}개 [{problems_str}, ... 외 {remaining}개]"
-                    )
+                    problems_sorted = sorted(problems)
+                    if len(problems_sorted) <= 15:
+                        problems_str = ", ".join(map(str, problems_sorted))
+                        member_list.append(
+                            f"{rank_label} {boj_handle} - {status_icon} {solved_count}개 [{problems_str}]"
+                        )
+                    else:
+                        problems_str = ", ".join(map(str, problems_sorted[:15]))
+                        remaining = len(problems_sorted) - 15
+                        member_list.append(
+                            f"{rank_label} {boj_handle} - {status_icon} {solved_count}개 [{problems_str}, ... 외 {remaining}개]"
+                        )
 
     if len(results) > 25:
         member_list.append(f"\n... 외 {len(results) - 25}명")
@@ -601,14 +606,19 @@ def setup(bot):
                 if solved_count == 0:
                     member_list.append(f"{i}. {boj_handle} - {status_icon} 0개")
                 else:
-                    problems_sorted = sorted(problems)
-                    if len(problems_sorted) <= 15:
-                        problems_str = ", ".join(map(str, problems_sorted))
-                        member_list.append(f"{i}. {boj_handle} - {status_icon} {solved_count}개 [{problems_str}]")
+                    # solved.ac 기반 계산에서는 문제 번호 목록이 없을 수 있으므로,
+                    # 목록이 비어 있으면 개수만 표시하고, 있을 때만 대괄호로 문제 번호를 보여준다.
+                    if not problems:
+                        member_list.append(f"{i}. {boj_handle} - {status_icon} {solved_count}개")
                     else:
-                        problems_str = ", ".join(map(str, problems_sorted[:15]))
-                        remaining = len(problems_sorted) - 15
-                        member_list.append(f"{i}. {boj_handle} - {status_icon} {solved_count}개 [{problems_str}, ... 외 {remaining}개]")
+                        problems_sorted = sorted(problems)
+                        if len(problems_sorted) <= 15:
+                            problems_str = ", ".join(map(str, problems_sorted))
+                            member_list.append(f"{i}. {boj_handle} - {status_icon} {solved_count}개 [{problems_str}]")
+                        else:
+                            problems_str = ", ".join(map(str, problems_sorted[:15]))
+                            remaining = len(problems_sorted) - 15
+                            member_list.append(f"{i}. {boj_handle} - {status_icon} {solved_count}개 [{problems_str}, ... 외 {remaining}개]")
         
         if len(results) > 25:
             member_list.append(f"\n... 외 {len(results) - 25}명")

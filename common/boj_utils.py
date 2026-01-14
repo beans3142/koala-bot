@@ -145,17 +145,33 @@ async def get_user_solved_problems(baekjoon_id: str, start_date: datetime = None
         return []
 
 async def verify_user_exists(baekjoon_id: str) -> bool:
-    """백준 사용자 존재 여부 확인"""
+    """
+    백준(BOJ) 사용자 존재 여부 확인
+
+    기존에는 acmicpc.net 프로필 페이지(HTML)를 직접 조회했지만,
+    현재 서버 IP가 BOJ 쪽에서 403으로 차단된 상태라 solved.ac API로 대체한다.
+
+    solved.ac 문서 기준:
+      - GET /api/v3/user/show?handle={handle}
+      - 200: 사용자 존재
+      - 404: 사용자 없음
+    """
     try:
-        url = f"https://www.acmicpc.net/user/{baekjoon_id}"
+        url = f"https://solved.ac/api/v3/user/show?handle={baekjoon_id}"
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
-        
+
         async with aiohttp.ClientSession(headers=headers) as session:
             async with session.get(url) as response:
-                return response.status == 200
-    except:
+                if response.status == 200:
+                    return True
+                if response.status == 404:
+                    return False
+                # 기타 상태코드는 보수적으로 False 처리
+                return False
+    except Exception as e:
+        print(f"solved.ac 사용자 확인 오류: {e}")
         return False
 
 async def check_problem_solved(baekjoon_id: str, problem_id: int) -> bool:
@@ -166,139 +182,93 @@ async def check_problem_solved(baekjoon_id: str, problem_id: int) -> bool:
 async def get_weekly_solved_count(baekjoon_id: str, start_date: datetime, end_date: datetime) -> Dict:
     """
     특정 기간 동안 해결한 문제 수 및 문제 목록 가져오기
-    
-    Args:
-        baekjoon_id: 백준 아이디
-        start_date: 시작 날짜 (datetime)
-        end_date: 종료 날짜 (datetime)
-    
-    Returns:
-        {
-            'count': int,  # 해결한 문제 수
-            'problems': List[int]  # 해결한 문제 번호 목록
-        }
+
+    기존 구현은 BOJ status 페이지(HTML)를 여러 페이지 크롤링했지만,
+    현재 서버 IP가 BOJ에서 403이기 때문에 solved.ac의 user history API로 대체한다.
+
+    solved.ac history API:
+      - GET /api/v3/user/history?handle={handle}&topic=solvedCount
+      - 응답: 날짜별 누적 solvedCount 목록
+        예시: [{ "date": "2025-12-30", "value": 2044 }, ...]
+
+    누적 값이므로,
+      기간 [start, end] 에 푼 문제 수 = value(end) - value(start - 1일)
+    으로 계산한다.
     """
     try:
-        solved_problems = set()
-        page = 1
-        
+        url = f"https://solved.ac/api/v3/user/history?handle={baekjoon_id}&topic=solvedCount"
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
-        
+
         async with aiohttp.ClientSession(headers=headers) as session:
-            # 최대 20페이지까지 확인 (최근 2000개 제출)
-            for page in range(1, 21):
-                # result_id=4는 "맞았습니다" 결과만 필터링
-                url = f"https://www.acmicpc.net/status?user_id={baekjoon_id}&result_id=4&page={page}"
-                
-                async with session.get(url) as response:
-                    if response.status != 200:
-                        break
-                    
-                    html = await response.text()
-                    soup = BeautifulSoup(html, 'html.parser')
-                    
-                    status_table = soup.find('table', id='status-table')
-                    if not status_table:
-                        break
-                    
-                    tbody = status_table.find('tbody')
-                    if not tbody:
-                        break
-                    
-                    rows = tbody.find_all('tr')
-                    if not rows:
-                        break
-                    
-                    # 이 페이지의 모든 제출이 기간을 벗어나면 중단
-                    page_has_valid = False
-                    
-                    for tr in rows:
-                        # 결과 확인 (이미 result_id=4로 필터링했지만 다시 확인)
-                        result_td = tr.find('td', class_='result')
-                        if not result_td:
-                            continue
-                        
-                        result_text = result_td.get_text(strip=True)
-                        if '맞았습니다' not in result_text and '정답' not in result_text:
-                            continue
-                        
-                        # 제출 시간 찾기
-                        time_td = tr.find('td', class_='real-time-update')
-                        if not time_td:
-                            time_elem = tr.find('a', class_='real-time-update')
-                            if time_elem and time_elem.get('title'):
-                                time_str = time_elem.get('title')
-                            else:
-                                continue
-                        else:
-                            time_str = time_td.get_text(strip=True)
-                        
-                        # 시간 파싱
-                        try:
-                            if '-' in time_str and ':' in time_str:
-                                # "2024-01-01 12:34:56" 형식
-                                submitted_dt = datetime.strptime(time_str, '%Y-%m-%d %H:%M:%S')
-                            else:
-                                # 상대 시간 파싱 ("~초 전", "~분 전", "~시간 전", "~일 전")
-                                submitted_dt = None
-                                now = datetime.now()
-                                
-                                if '초 전' in time_str:
-                                    seconds_match = re.search(r'(\d+)초\s*전', time_str)
-                                    if seconds_match:
-                                        seconds = int(seconds_match.group(1))
-                                        submitted_dt = now - timedelta(seconds=seconds)
-                                elif '분 전' in time_str:
-                                    minutes_match = re.search(r'(\d+)분\s*전', time_str)
-                                    if minutes_match:
-                                        minutes = int(minutes_match.group(1))
-                                        submitted_dt = now - timedelta(minutes=minutes)
-                                elif '시간 전' in time_str:
-                                    hours_match = re.search(r'(\d+)시간\s*전', time_str)
-                                    if hours_match:
-                                        hours = int(hours_match.group(1))
-                                        submitted_dt = now - timedelta(hours=hours)
-                                elif '일 전' in time_str:
-                                    days_match = re.search(r'(\d+)일\s*전', time_str)
-                                    if days_match:
-                                        days = int(days_match.group(1))
-                                        submitted_dt = now - timedelta(days=days)
-                                
-                                if submitted_dt is None:
-                                    # 파싱 실패 시 스킵
-                                    continue
-                        except:
-                            continue
-                        
-                        # 기간 확인
-                        if start_date <= submitted_dt <= end_date:
-                            # 문제 번호 찾기
-                            problem_link = tr.find('a', href=re.compile(r'/problem/\d+'))
-                            if problem_link:
-                                match = re.search(r'/problem/(\d+)', problem_link.get('href', ''))
-                                if match:
-                                    problem_id = int(match.group(1))
-                                    solved_problems.add(problem_id)
-                                    page_has_valid = True
-                        elif submitted_dt < start_date:
-                            # 시작일 이전이면 더 이상 확인할 필요 없음
-                            return {
-                                'count': len(solved_problems),
-                                'problems': sorted(list(solved_problems))
-                            }
-                    
-                    # 이 페이지에 유효한 제출이 없으면 더 이상 확인하지 않음
-                    if not page_has_valid:
-                        break
-        
+            async with session.get(url) as response:
+                if response.status != 200:
+                    return {'count': 0, 'problems': []}
+
+                data = await response.json()
+
+        # solved.ac history API 응답 형식:
+        # [{"timestamp": "2021-09-12T04:37:27.000Z", "value": 445}, ...]
+        # timestamp는 ISO 8601(UTC) 형식이며, 같은 날에 여러 항목이 있을 수 있다.
+        # 여기서는 시각 단위 누적값을 그대로 사용해 주어진 시각 범위로 정확히 잘라낸다.
+        history = []  # [(dt_utc, value)]
+        for entry in data:
+            timestamp_str = entry.get('timestamp')
+            value = entry.get('value')
+            if not timestamp_str or value is None:
+                continue
+            try:
+                # "2021-09-12T04:37:27.000Z" 형식 → UTC naive datetime
+                dt = datetime.fromisoformat(
+                    timestamp_str.replace("Z", "+00:00")
+                ).replace(tzinfo=None)
+                v = int(value)
+                history.append((dt, v))
+            except Exception:
+                continue
+
+        if not history:
+            return {'count': 0, 'problems': []}
+
+        # 시각 순 정렬
+        history.sort(key=lambda x: x[0])
+
+        # channel.py 에서는 KST(UTC+9) 기준 start/end 를 넘기므로,
+        # 비교를 위해 UTC 로 변환해서 사용한다.
+        def to_utc(dt: datetime) -> datetime:
+            return dt - timedelta(hours=9)
+
+        start_utc = to_utc(start_date)
+        end_utc = to_utc(end_date)
+
+        def cumulative_before(target_dt: datetime, inclusive: bool) -> int:
+            """
+            target_dt 이전(또는 이하)까지의 누적 solvedCount.
+            history 는 시간 증가에 따라 value 가 증가/유지되는 누적값 시계열이라고 가정.
+            """
+            last_val = 0
+            for dt, v in history:
+                if dt < target_dt or (inclusive and dt <= target_dt):
+                    last_val = v
+                else:
+                    break
+            return last_val
+
+        # 시작 시각 직전까지의 누적과 종료 시각까지의 누적 차이로 기간 내 풀이 수 계산
+        total_before = cumulative_before(start_utc, inclusive=False)
+        total_end = cumulative_before(end_utc, inclusive=True)
+
+        count = max(0, total_end - total_before)
+
+        # solved.ac history로는 개별 문제 번호까지는 알 수 없으므로,
+        # count만 채우고 problems 리스트는 비워둔다.
         return {
-            'count': len(solved_problems),
-            'problems': sorted(list(solved_problems))
+            'count': count,
+            'problems': []
         }
     except Exception as e:
-        print(f"주간 해결한 문제 수 조회 오류: {e}")
+        print(f"주간 해결한 문제 수 조회 오류(solved.ac): {e}")
         return {'count': 0, 'problems': []}
 
 async def get_recent_solved_count(baekjoon_id: str, start_date: datetime, end_date: datetime) -> int:
