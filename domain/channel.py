@@ -434,17 +434,67 @@ def setup(bot):
 
     @group_assignment_create_group.command(name='링크제출')
     @commands.has_permissions(administrator=True)
-    async def group_assignment_create_link_submission(ctx, *, group_name: str):
+    async def group_assignment_create_link_submission(ctx, *, args: str):
         """그룹 주간 링크 제출 메시지 생성 (관리자 전용)
         - 해당 채널에 고정 메시지 1개 생성
         - 월요일 00시 ~ 다음 주 월요일 01시까지 제출 가능
         - 정각 자동 갱신 + 수동 버튼 갱신
+        
+        사용법: /그룹 과제 생성 링크제출 [그룹명] [카테고리명] 카테고리의 [채널명] 채널
+        예시: /그룹 과제 생성 링크제출 21기-실전 21기 기초 카테고리의 제출현황 채널
         """
         from domain.link_submission import (
             save_group_link_submission_status,
             update_link_submission_status,
             LinkSubmissionView,
         )
+
+        # 채널 링크 파싱 (<#채널ID> 형식) - 기존 방식 지원
+        target_channel = None
+        group_name = None
+        
+        import re
+        # 채널 링크가 있는지 확인 (<#...> 형식)
+        channel_match = re.search(r'<#(\d+)>', args)
+        if channel_match:
+            channel_id = int(channel_match.group(1))
+            target_channel = ctx.guild.get_channel(channel_id)
+            if not target_channel:
+                await ctx.send(f"❌ 채널을 찾을 수 없습니다. (ID: {channel_id})")
+                return
+            
+            # 그룹명에서 채널 링크 제거
+            group_name = re.sub(r'<#\d+>', '', args).strip()
+        else:
+            # 카테고리와 채널 이름 파싱: "[그룹명(카테고리명)] 카테고리의 [채널명] 채널"
+            category_channel_match = re.search(r'(.+?)\s+카테고리의\s+(.+?)\s+채널', args)
+            if category_channel_match:
+                # 그룹명 = 카테고리명
+                group_name = category_channel_match.group(1).strip()
+                channel_name = category_channel_match.group(2).strip()
+                
+                # 카테고리 찾기 (그룹명이 카테고리명)
+                category = discord.utils.get(ctx.guild.categories, name=group_name)
+                if not category:
+                    await ctx.send(f"❌ '{group_name}' 카테고리(그룹)를 찾을 수 없습니다.")
+                    return
+                
+                # 카테고리 안의 채널 찾기
+                target_channel = discord.utils.get(category.channels, name=channel_name)
+                if not target_channel:
+                    await ctx.send(f"❌ '{group_name}' 카테고리 안에 '{channel_name}' 채널을 찾을 수 없습니다.")
+                    return
+            else:
+                # 카테고리/채널 정보가 없으면 전체를 그룹명으로 간주
+                group_name = args.strip()
+        
+        # 채널이 지정되지 않았으면 현재 채널 사용
+        if not target_channel:
+            target_channel = ctx.channel
+        
+        if not group_name:
+            await ctx.send("❌ 그룹명을 입력해주세요.")
+            return
 
         data = load_data()
 
@@ -464,7 +514,7 @@ def setup(bot):
             return
 
         # 기준 주 계산 (명령어 실행일이 속한 주의 월요일 00시 ~ 다음 주 월요일 01시)
-        today = datetime.now()
+        today = get_kst_now()
         days_since_monday = today.weekday()  # 0=월요일
         week_start = today - timedelta(days=days_since_monday)
         week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -480,13 +530,14 @@ def setup(bot):
             color=discord.Color.blue(),
         )
 
-        msg = await ctx.send(embed=embed, view=LinkSubmissionView())
+        # 지정된 채널에 메시지 전송
+        msg = await target_channel.send(embed=embed, view=LinkSubmissionView())
 
         # DB에 저장
         save_group_link_submission_status(
             group_name,
             role_name,
-            str(ctx.channel.id),
+            str(target_channel.id),
             str(msg.id),
             week_start.isoformat(),
             week_end.isoformat(),
@@ -495,18 +546,68 @@ def setup(bot):
         # 즉시 1회 갱신
         await update_link_submission_status(group_name, ctx.bot)
         await ctx.send(
-            f"✅ '{group_name}' 그룹의 주간 링크 제출 메시지가 설정되었습니다.\n"
+            f"✅ '{group_name}' 그룹의 주간 링크 제출 메시지가 {target_channel.mention}에 설정되었습니다.\n"
             f"📅 매시 정각 자동 갱신, 버튼으로 수동 갱신 및 제출 가능합니다."
         )
 
     @group_assignment_create_group.command(name='문제풀이')
     @commands.has_permissions(administrator=True)
-    async def group_assignment_create_problem_solving(ctx, *, group_name: str):
+    async def group_assignment_create_problem_solving(ctx, *, args: str):
         """그룹 주간 문제풀이 현황 메시지 생성 (관리자 전용)
         - 해당 채널에 고정 메시지 1개 생성
         - 월요일 00시 ~ 다음 주 월요일 01시까지 정각 자동 갱신 + 수동 버튼 갱신
+        
+        사용법: /그룹 과제 생성 문제풀이 [그룹명(카테고리명)] 카테고리의 [채널명] 채널
+        예시: /그룹 과제 생성 문제풀이 21기 기초 카테고리의 풀이현황 채널
         """
         data = load_data()
+
+        # 채널 링크 파싱 (<#채널ID> 형식) - 기존 방식 지원
+        target_channel = None
+        group_name = None
+        
+        import re
+        # 채널 링크가 있는지 확인 (<#...> 형식)
+        channel_match = re.search(r'<#(\d+)>', args)
+        if channel_match:
+            channel_id = int(channel_match.group(1))
+            target_channel = ctx.guild.get_channel(channel_id)
+            if not target_channel:
+                await ctx.send(f"❌ 채널을 찾을 수 없습니다. (ID: {channel_id})")
+                return
+            
+            # 그룹명에서 채널 링크 제거
+            group_name = re.sub(r'<#\d+>', '', args).strip()
+        else:
+            # 카테고리와 채널 이름 파싱: "[그룹명(카테고리명)] 카테고리의 [채널명] 채널"
+            category_channel_match = re.search(r'(.+?)\s+카테고리의\s+(.+?)\s+채널', args)
+            if category_channel_match:
+                # 그룹명 = 카테고리명
+                group_name = category_channel_match.group(1).strip()
+                channel_name = category_channel_match.group(2).strip()
+                
+                # 카테고리 찾기 (그룹명이 카테고리명)
+                category = discord.utils.get(ctx.guild.categories, name=group_name)
+                if not category:
+                    await ctx.send(f"❌ '{group_name}' 카테고리(그룹)를 찾을 수 없습니다.")
+                    return
+                
+                # 카테고리 안의 채널 찾기
+                target_channel = discord.utils.get(category.channels, name=channel_name)
+                if not target_channel:
+                    await ctx.send(f"❌ '{group_name}' 카테고리 안에 '{channel_name}' 채널을 찾을 수 없습니다.")
+                    return
+            else:
+                # 카테고리/채널 정보가 없으면 전체를 그룹명으로 간주
+                group_name = args.strip()
+        
+        # 채널이 지정되지 않았으면 현재 채널 사용
+        if not target_channel:
+            target_channel = ctx.channel
+        
+        if not group_name:
+            await ctx.send("❌ 그룹명을 입력해주세요.")
+            return
 
         # 그룹 이름으로 역할 찾기
         role_name = find_role_by_group_name(group_name, data)
@@ -522,7 +623,7 @@ def setup(bot):
             return
 
         # 기준 주 계산 (명령어 실행일이 속한 주의 월요일 00시 ~ 다음 주 월요일 01시)
-        today = datetime.now()
+        today = get_kst_now()
         days_since_monday = today.weekday()  # 0=월요일
         week_start = today - timedelta(days=days_since_monday)
         week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -538,13 +639,14 @@ def setup(bot):
             color=discord.Color.blue(),
         )
 
-        msg = await ctx.send(embed=embed, view=GroupWeeklyStatusView())
+        # 지정된 채널에 메시지 전송
+        msg = await target_channel.send(embed=embed, view=GroupWeeklyStatusView())
 
         # DB에 저장
         save_group_weekly_status(
             group_name,
             role_name,
-            str(ctx.channel.id),
+            str(target_channel.id),
             str(msg.id),
             week_start.isoformat(),
             week_end.isoformat(),
@@ -553,7 +655,7 @@ def setup(bot):
         # 즉시 1회 갱신
         await update_group_weekly_status(group_name, ctx.bot)
         await ctx.send(
-            f"✅ '{group_name}' 그룹의 주간 문제풀이 현황 메시지가 설정되었습니다.\n"
+            f"✅ '{group_name}' 그룹의 주간 문제풀이 현황 메시지가 {target_channel.mention}에 설정되었습니다.\n"
             f"📅 매시 정각 자동 갱신, 버튼으로 수동 갱신 가능합니다."
         )
 
