@@ -93,10 +93,18 @@ async def update_link_submission_status(group_name: str, bot_instance):
     # 결과 정렬 (제출한 순서대로)
     results = []
     guild = channel.guild if channel else None
+    seen_user_ids = set()  # 중복 제거용
     
     for user_info in users:
         user_id = user_info['user_id']
+        
+        # 중복 제거
+        if user_id in seen_user_ids:
+            continue
+        seen_user_ids.add(user_id)
+        
         username = user_info['username']
+        boj_handle = user_info.get('boj_handle') or '미등록'
         links = submission_map.get(user_id, [])
 
         # Discord 서버에서 멤버 정보 가져오기 (display_name 사용)
@@ -109,24 +117,33 @@ async def update_link_submission_status(group_name: str, bot_instance):
         results.append({
             'user_id': user_id,
             'username': display_name,  # display_name 사용
+            'boj_handle': boj_handle,
             'links': links,
         })
 
     # 제출한 사람들을 먼저, 그 다음 미제출
     results.sort(key=lambda x: (len(x['links']) == 0, x['username']))
 
-    # 메시지 생성 (요청 형식: "2026-01-12 ~ 2026-01-17 풀이 제출\n1. nickname - link1, link2\n...")
+    # 메시지 생성 (요청 형식: "2026-01-12 ~ 2026-01-17 풀이 제출\n1. nickname (boj_id) - link1, link2\n...")
     title_text = f"{week_start.strftime('%Y-%m-%d')} ~ {week_end.strftime('%Y-%m-%d')} 풀이 제출"
     
     submission_lines = []
     for i, result in enumerate(results, 1):
         username = result['username']
+        boj_handle = result['boj_handle']
         links = result['links']
+        
+        # 디스코드 이름 (백준 ID) 형식으로 표시
+        if boj_handle == '미등록':
+            name_display = username
+        else:
+            name_display = f"{username} ({boj_handle})"
+        
         if links:
             links_str = ", ".join(links)
-            submission_lines.append(f"{i}. {username} - {links_str}")
+            submission_lines.append(f"{i}. {name_display} - {links_str}")
         else:
-            submission_lines.append(f"{i}. {username} - (미제출)")
+            submission_lines.append(f"{i}. {name_display} - (미제출)")
 
     embed = discord.Embed(
         title=f"📝 '{group_name}' 그룹 풀이 제출",

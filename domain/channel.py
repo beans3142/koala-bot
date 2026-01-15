@@ -80,14 +80,31 @@ async def update_group_weekly_status(group_name: str, bot_instance):
 
     # 각 유저의 백준 문제풀이 현황 조회
     results = []
+    seen_user_ids = set()  # 중복 제거용
+    guild = channel.guild if channel else None
+    
     for user_info in users:
+        user_id = user_info['user_id']
+        
+        # 중복 제거
+        if user_id in seen_user_ids:
+            continue
+        seen_user_ids.add(user_id)
+        
         username = user_info['username']
         boj_handle = user_info.get('boj_handle')
+        
+        # Discord 서버에서 멤버 정보 가져오기 (display_name 사용)
+        display_name = username
+        if guild:
+            member = guild.get_member(int(user_id))
+            if member:
+                display_name = member.display_name
 
         if not boj_handle or boj_handle == '미등록':
             results.append(
                 {
-                    'username': username,
+                    'username': display_name,  # display_name 사용
                     'boj_handle': boj_handle or '미등록',
                     'solved_count': 0,
                     'status': '❌ BOJ 핸들 미등록',
@@ -99,7 +116,7 @@ async def update_group_weekly_status(group_name: str, bot_instance):
             solved_data = await get_weekly_solved_count(boj_handle, week_start, week_end)
             results.append(
                 {
-                    'username': username,
+                    'username': display_name,  # display_name 사용
                     'boj_handle': boj_handle,
                     'solved_count': solved_data['count'],
                     'problems': solved_data.get('problems', []),
@@ -109,7 +126,7 @@ async def update_group_weekly_status(group_name: str, bot_instance):
         except Exception as e:
             results.append(
                 {
-                    'username': username,
+                    'username': display_name,  # display_name 사용
                     'boj_handle': boj_handle,
                     'solved_count': 0,
                     'status': f'❌ 오류: {str(e)[:30]}',
@@ -130,6 +147,8 @@ async def update_group_weekly_status(group_name: str, bot_instance):
 
     member_list = []
     total_solved = 0
+    seen_user_ids = set()  # 중복 제거용
+    
     for i, result in enumerate(results[:25], 1):
         status_icon = result['status']
         username = result['username']
@@ -139,29 +158,32 @@ async def update_group_weekly_status(group_name: str, bot_instance):
 
         rank_label = {1: "👑", 2: "🥈", 3: "🥉"}.get(i, f"{i}.")
 
+        # 디스코드 이름 (백준 ID) 형식으로 표시
         if boj_handle == '미등록':
-            member_list.append(f"{rank_label} {username} - {status_icon} BOJ 핸들 미등록")
+            name_display = username
+            member_list.append(f"{rank_label} {name_display} - {status_icon} BOJ 핸들 미등록")
         else:
+            name_display = f"{username} ({boj_handle})"
             problems = result.get('problems', [])
             if solved_count == 0:
-                member_list.append(f"{rank_label} {boj_handle} - {status_icon} 0개")
+                member_list.append(f"{rank_label} {name_display} - {status_icon} 0개")
             else:
                 # solved.ac 기반 계산에서는 문제 번호 목록이 없을 수 있으므로,
                 # 목록이 비어 있으면 개수만 표시하고, 있을 때만 대괄호로 문제 번호를 보여준다.
                 if not problems:
-                    member_list.append(f"{rank_label} {boj_handle} - {status_icon} {solved_count}개")
+                    member_list.append(f"{rank_label} {name_display} - {status_icon} {solved_count}개")
                 else:
                     problems_sorted = sorted(problems)
                     if len(problems_sorted) <= 15:
                         problems_str = ", ".join(map(str, problems_sorted))
                         member_list.append(
-                            f"{rank_label} {boj_handle} - {status_icon} {solved_count}개 [{problems_str}]"
+                            f"{rank_label} {name_display} - {status_icon} {solved_count}개 [{problems_str}]"
                         )
                     else:
                         problems_str = ", ".join(map(str, problems_sorted[:15]))
                         remaining = len(problems_sorted) - 15
                         member_list.append(
-                            f"{rank_label} {boj_handle} - {status_icon} {solved_count}개 [{problems_str}, ... 외 {remaining}개]"
+                            f"{rank_label} {name_display} - {status_icon} {solved_count}개 [{problems_str}, ... 외 {remaining}개]"
                         )
 
     if len(results) > 25:
