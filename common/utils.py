@@ -16,6 +16,13 @@ def get_kst_now() -> datetime:
     """한국 시간(KST) 현재 시간 반환"""
     return datetime.now(KST)
 
+def ensure_kst(dt: datetime) -> datetime:
+    """datetime이 timezone-naive면 KST timezone을 추가, 이미 timezone-aware면 그대로 반환"""
+    if dt.tzinfo is None:
+        # timezone-naive면 KST timezone 추가
+        return dt.replace(tzinfo=KST)
+    return dt
+
 # 데이터 저장 파일
 DATA_FILE = 'data.json'
 USE_SQLITE = True  # SQLite 사용 여부 (True로 설정하면 database.py 사용)

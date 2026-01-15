@@ -5,7 +5,7 @@ import aiohttp
 from bs4 import BeautifulSoup
 import re
 from typing import List, Dict, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # solved.ac tier 매핑 (숫자 -> 이름)
 TIER_MAPPING = {
@@ -237,7 +237,12 @@ async def get_weekly_solved_count(baekjoon_id: str, start_date: datetime, end_da
         # channel.py 에서는 KST(UTC+9) 기준 start/end 를 넘기므로,
         # 비교를 위해 UTC 로 변환해서 사용한다.
         def to_utc(dt: datetime) -> datetime:
-            return dt - timedelta(hours=9)
+            if dt.tzinfo is not None:
+                # timezone-aware면 UTC로 변환
+                return dt.astimezone(timezone.utc).replace(tzinfo=None)
+            else:
+                # timezone-naive면 9시간 빼기 (KST → UTC)
+                return dt - timedelta(hours=9)
 
         start_utc = to_utc(start_date)
         end_utc = to_utc(end_date)

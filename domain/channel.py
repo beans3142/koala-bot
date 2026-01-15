@@ -4,7 +4,7 @@
 import discord
 from discord.ext import commands
 from datetime import datetime, timedelta, time
-from common.utils import load_data, save_data, get_kst_now
+from common.utils import load_data, save_data, get_kst_now, ensure_kst
 from common.database import (
     get_role_users,
     save_group_weekly_status,
@@ -44,6 +44,10 @@ async def update_group_weekly_status(group_name: str, bot_instance):
     role_name = status_info['role_name']
     week_start = datetime.fromisoformat(status_info['week_start'])
     week_end = datetime.fromisoformat(status_info['week_end'])
+    
+    # timezone-naive면 KST timezone 추가
+    week_start = ensure_kst(week_start)
+    week_end = ensure_kst(week_end)
 
     now = get_kst_now()  # 한국 시간 사용
     # 기간 밖이면 갱신하지 않음
@@ -227,10 +231,14 @@ async def group_weekly_auto_update():
     if not _bot_for_group_weekly:
         return
 
-    now = datetime.now()
+    now = get_kst_now()  # 한국 시간 사용
     for info in get_all_group_weekly_status():
         week_start = datetime.fromisoformat(info['week_start'])
         week_end = datetime.fromisoformat(info['week_end'])
+        
+        # timezone-naive면 KST timezone 추가
+        week_start = ensure_kst(week_start)
+        week_end = ensure_kst(week_end)
 
         if week_start <= now <= week_end:
             await update_group_weekly_status(info['group_name'], _bot_for_group_weekly)
@@ -271,7 +279,12 @@ class GroupWeeklyStatusView(discord.ui.View):
 
         week_start = datetime.fromisoformat(info['week_start'])
         week_end = datetime.fromisoformat(info['week_end'])
-        now = datetime.now()
+        
+        # timezone-naive면 KST timezone 추가
+        week_start = ensure_kst(week_start)
+        week_end = ensure_kst(week_end)
+        
+        now = get_kst_now()  # 한국 시간 사용
 
         if not (week_start <= now <= week_end):
             if interaction.response.is_done():
@@ -657,7 +670,7 @@ def setup(bot):
             color=discord.Color.blue()
         )
         
-        now = datetime.now()
+        now = get_kst_now()  # 한국 시간 사용
         assignment_list = []
         
         # 링크제출 현황
@@ -665,6 +678,10 @@ def setup(bot):
             channel_id = link_status['channel_id']
             week_start = datetime.fromisoformat(link_status['week_start'])
             week_end = datetime.fromisoformat(link_status['week_end'])
+            
+            # timezone-naive면 KST timezone 추가
+            week_start = ensure_kst(week_start)
+            week_end = ensure_kst(week_end)
             
             channel = ctx.guild.get_channel(int(channel_id))
             channel_name = channel.mention if channel else f"<#{channel_id}>"
@@ -688,6 +705,10 @@ def setup(bot):
             channel_id = problem_status['channel_id']
             week_start = datetime.fromisoformat(problem_status['week_start'])
             week_end = datetime.fromisoformat(problem_status['week_end'])
+            
+            # timezone-naive면 KST timezone 추가
+            week_start = ensure_kst(week_start)
+            week_end = ensure_kst(week_end)
             
             channel = ctx.guild.get_channel(int(channel_id))
             channel_name = channel.mention if channel else f"<#{channel_id}>"
@@ -727,12 +748,16 @@ def setup(bot):
         )
         
         status_list = []
-        now = datetime.now()
+        now = get_kst_now()  # 한국 시간 사용
         for info in all_status:
             group_name = info['group_name']
             channel_id = info['channel_id']
             week_start = datetime.fromisoformat(info['week_start'])
             week_end = datetime.fromisoformat(info['week_end'])
+            
+            # timezone-naive면 KST timezone 추가
+            week_start = ensure_kst(week_start)
+            week_end = ensure_kst(week_end)
             
             # 채널 정보 가져오기
             channel = ctx.guild.get_channel(int(channel_id))
