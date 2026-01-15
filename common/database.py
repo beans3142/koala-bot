@@ -789,6 +789,15 @@ def delete_link_submissions_by_week(group_name: str, week_start: str):
     conn.commit()
     conn.close()
 
+def delete_all_link_submissions_by_group(group_name: str):
+    """특정 그룹의 모든 링크 제출 데이터 삭제"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('DELETE FROM link_submission_data WHERE group_name = ?', (group_name,))
+    conn.commit()
+    conn.close()
+
 def get_weekly_status_message(role_name: str) -> Optional[Dict]:
     """주간 현황 메시지 가져오기"""
     conn = get_connection()

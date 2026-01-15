@@ -574,15 +574,18 @@ def setup(bot):
                 get_group_link_submission_status,
                 delete_group_link_submission_status,
             )
+            from common.database import delete_all_link_submissions_by_group
             info = get_group_link_submission_status(group_name)
             if not info:
                 await ctx.send(f"❌ '{group_name}' 그룹의 링크 제출 메시지를 찾을 수 없습니다.")
                 return
             delete_group_link_submission_status(group_name)
+            # 해당 그룹의 모든 링크 제출 데이터도 삭제
+            delete_all_link_submissions_by_group(group_name)
             channel = ctx.guild.get_channel(int(info['channel_id']))
             channel_name = channel.mention if channel else f"<#{info['channel_id']}>"
             await ctx.send(
-                f"✅ '{group_name}' 그룹의 링크 제출 메시지 정보가 삭제되었습니다.\n"
+                f"✅ '{group_name}' 그룹의 링크 제출 메시지 정보 및 제출 데이터가 삭제되었습니다.\n"
                 f"📝 메시지는 {channel_name}에 그대로 남아있습니다."
             )
         elif assignment_type == '문제풀이':
