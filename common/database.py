@@ -124,6 +124,33 @@ def init_database():
         )
     ''')
     
+    # 그룹 주간 링크 제출 메시지 테이블
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS group_link_submissions (
+            group_name TEXT PRIMARY KEY,
+            role_name TEXT,
+            channel_id TEXT,
+            message_id TEXT,
+            week_start TEXT,
+            week_end TEXT,
+            last_updated TEXT
+        )
+    ''')
+    
+    # 그룹 주간 링크 제출 데이터 테이블
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS link_submission_data (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_name TEXT,
+            user_id TEXT,
+            week_start TEXT,
+            links TEXT,
+            submitted_at TEXT,
+            updated_at TEXT,
+            UNIQUE(group_name, user_id, week_start)
+        )
+    ''')
+    
     conn.commit()
     conn.close()
 
@@ -626,6 +653,139 @@ def delete_group_weekly_status(group_name: str):
     cursor = conn.cursor()
     
     cursor.execute('DELETE FROM group_weekly_status WHERE group_name = ?', (group_name,))
+    conn.commit()
+    conn.close()
+
+# ==================== 그룹 주간 링크 제출 관리 ====================
+
+def save_group_link_submission_status(group_name: str, role_name: str, channel_id: str,
+                                      message_id: str, week_start: str, week_end: str,
+                                      last_updated: Optional[str] = None):
+    """그룹 주간 링크 제출 메시지 저장"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    now = last_updated or datetime.now().isoformat()
+    cursor.execute('''
+        INSERT OR REPLACE INTO group_link_submissions
+        (group_name, role_name, channel_id, message_id, week_start, week_end, last_updated)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', (group_name, role_name, channel_id, message_id, week_start, week_end, now))
+    
+    conn.commit()
+    conn.close()
+
+def get_group_link_submission_status(group_name: str) -> Optional[Dict]:
+    """그룹 주간 링크 제출 메시지 가져오기 (그룹 이름 기준)"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM group_link_submissions WHERE group_name = ?', (group_name,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if row:
+        return dict(row)
+    return None
+
+def get_group_link_submission_status_by_message(channel_id: str, message_id: str) -> Optional[Dict]:
+    """채널/메시지 ID로 그룹 주간 링크 제출 메시지 가져오기"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM group_link_submissions WHERE channel_id = ? AND message_id = ?',
+                   (channel_id, message_id))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if row:
+        return dict(row)
+    return None
+
+def get_all_group_link_submission_status() -> List[Dict]:
+    """모든 그룹 주간 링크 제출 메시지 목록 가져오기"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM group_link_submissions')
+    rows = cursor.fetchall()
+    conn.close()
+    
+    return [dict(row) for row in rows]
+
+def delete_group_link_submission_status(group_name: str):
+    """그룹 주간 링크 제출 메시지 삭제"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('DELETE FROM group_link_submissions WHERE group_name = ?', (group_name,))
+    conn.commit()
+    conn.close()
+
+def save_link_submission(group_name: str, user_id: str, week_start: str, links: List[str]):
+    """링크 제출 저장 (업데이트 가능)"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    now = datetime.now().isoformat()
+    links_json = json.dumps(links, ensure_ascii=False)
+    
+    cursor.execute('''
+        INSERT OR REPLACE INTO link_submission_data
+        (group_name, user_id, week_start, links, submitted_at, updated_at)
+        VALUES (?, ?, ?, ?, 
+                COALESCE((SELECT submitted_at FROM link_submission_data WHERE group_name = ? AND user_id = ? AND week_start = ?), ?),
+                ?)
+    ''', (group_name, user_id, week_start, links_json, group_name, user_id, week_start, now, now))
+    
+    conn.commit()
+    conn.close()
+
+def get_link_submissions(group_name: str, week_start: str) -> List[Dict]:
+    """특정 그룹/주차의 모든 링크 제출 가져오기"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT * FROM link_submission_data
+        WHERE group_name = ? AND week_start = ?
+        ORDER BY updated_at DESC
+    ''', (group_name, week_start))
+    rows = cursor.fetchall()
+    conn.close()
+    
+    result = []
+    for row in rows:
+        data = dict(row)
+        data['links'] = json.loads(data['links'])
+        result.append(data)
+    return result
+
+def get_user_link_submission(group_name: str, user_id: str, week_start: str) -> Optional[Dict]:
+    """특정 사용자의 링크 제출 가져오기"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT * FROM link_submission_data
+        WHERE group_name = ? AND user_id = ? AND week_start = ?
+    ''', (group_name, user_id, week_start))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if row:
+        data = dict(row)
+        data['links'] = json.loads(data['links'])
+        return data
+    return None
+
+def delete_link_submissions_by_week(group_name: str, week_start: str):
+    """특정 그룹/주차의 모든 링크 제출 삭제"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('DELETE FROM link_submission_data WHERE group_name = ? AND week_start = ?',
+                   (group_name, week_start))
     conn.commit()
     conn.close()
 

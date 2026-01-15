@@ -384,10 +384,90 @@ def setup(bot):
         except Exception as e:
             await ctx.send(f"❌ 오류가 발생했습니다: {str(e)}")
 
-    @group_group.command(name='주간현황설정')
+    # 그룹 과제 서브그룹
+    @group_group.group(name='과제')
+    async def group_assignment_group(ctx):
+        """그룹 과제 관리 명령어 그룹"""
+        if ctx.invoked_subcommand is None:
+            await ctx.send("❌ 올바른 명령어를 입력해주세요. `/그룹 과제 생성 링크제출 <그룹명>` 또는 `/그룹 과제 생성 문제풀이 <그룹명>` 형식으로 입력해주세요.")
+
+    @group_assignment_group.group(name='생성')
+    async def group_assignment_create_group(ctx):
+        """그룹 과제 생성 명령어 그룹"""
+        if ctx.invoked_subcommand is None:
+            await ctx.send("❌ 올바른 명령어를 입력해주세요. `/그룹 과제 생성 링크제출 <그룹명>` 또는 `/그룹 과제 생성 문제풀이 <그룹명>` 형식으로 입력해주세요.")
+
+    @group_assignment_create_group.command(name='링크제출')
     @commands.has_permissions(administrator=True)
-    async def group_weekly_status_setup(ctx, *, group_name: str):
-        """그룹 주간 문제풀이 현황 메시지 설정 (관리자 전용)
+    async def group_assignment_create_link_submission(ctx, *, group_name: str):
+        """그룹 주간 링크 제출 메시지 생성 (관리자 전용)
+        - 해당 채널에 고정 메시지 1개 생성
+        - 월요일 00시 ~ 다음 주 월요일 01시까지 제출 가능
+        - 정각 자동 갱신 + 수동 버튼 갱신
+        """
+        from domain.link_submission import (
+            save_group_link_submission_status,
+            update_link_submission_status,
+            LinkSubmissionView,
+        )
+
+        data = load_data()
+
+        # 그룹 이름으로 역할 찾기
+        role_name = find_role_by_group_name(group_name, data)
+        if not role_name:
+            await ctx.send(
+                f"❌ '{group_name}' 그룹을 찾을 수 없습니다.\n💡 `/그룹 목록` 명령어로 등록된 그룹을 확인하세요."
+            )
+            return
+
+        # 역할 등록 여부 확인
+        if role_name not in data.get('role_tokens', {}):
+            await ctx.send(
+                f"❌ '{group_name}' 그룹에 연결된 역할('{role_name}')이 등록되지 않았습니다."
+            )
+            return
+
+        # 기준 주 계산 (명령어 실행일이 속한 주의 월요일 00시 ~ 다음 주 월요일 01시)
+        today = datetime.now()
+        days_since_monday = today.weekday()  # 0=월요일
+        week_start = today - timedelta(days=days_since_monday)
+        week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_end = week_start + timedelta(days=7, hours=1)
+
+        # 초기 임베드
+        embed = discord.Embed(
+            title=f"📝 '{group_name}' 그룹 풀이 제출",
+            description=(
+                f"기간: {week_start.strftime('%Y-%m-%d')} ~ {week_end.strftime('%Y-%m-%d %H:%M')}\n"
+                f"마지막 갱신: -"
+            ),
+            color=discord.Color.blue(),
+        )
+
+        msg = await ctx.send(embed=embed, view=LinkSubmissionView())
+
+        # DB에 저장
+        save_group_link_submission_status(
+            group_name,
+            role_name,
+            str(ctx.channel.id),
+            str(msg.id),
+            week_start.isoformat(),
+            week_end.isoformat(),
+        )
+
+        # 즉시 1회 갱신
+        await update_link_submission_status(group_name, ctx.bot)
+        await ctx.send(
+            f"✅ '{group_name}' 그룹의 주간 링크 제출 메시지가 설정되었습니다.\n"
+            f"📅 매시 정각 자동 갱신, 버튼으로 수동 갱신 및 제출 가능합니다."
+        )
+
+    @group_assignment_create_group.command(name='문제풀이')
+    @commands.has_permissions(administrator=True)
+    async def group_assignment_create_problem_solving(ctx, *, group_name: str):
+        """그룹 주간 문제풀이 현황 메시지 생성 (관리자 전용)
         - 해당 채널에 고정 메시지 1개 생성
         - 월요일 00시 ~ 다음 주 월요일 01시까지 정각 자동 갱신 + 수동 버튼 갱신
         """
@@ -441,6 +521,168 @@ def setup(bot):
             f"✅ '{group_name}' 그룹의 주간 문제풀이 현황 메시지가 설정되었습니다.\n"
             f"📅 매시 정각 자동 갱신, 버튼으로 수동 갱신 가능합니다."
         )
+
+    @group_assignment_group.command(name='갱신')
+    @commands.has_permissions(administrator=True)
+    async def group_assignment_refresh(ctx, assignment_type: str, *, group_name: str):
+        """그룹 과제 현황 갱신 (관리자 전용)
+        
+        assignment_type: '링크제출' 또는 '문제풀이'
+        """
+        if assignment_type not in ['링크제출', '문제풀이']:
+            await ctx.send("❌ 과제 유형은 '링크제출' 또는 '문제풀이'만 가능합니다.")
+            return
+
+        data = load_data()
+        role_name = find_role_by_group_name(group_name, data)
+        if not role_name:
+            await ctx.send(
+                f"❌ '{group_name}' 그룹을 찾을 수 없습니다.\n💡 `/그룹 목록` 명령어로 등록된 그룹을 확인하세요."
+            )
+            return
+
+        if assignment_type == '링크제출':
+            from domain.link_submission import update_link_submission_status
+            await update_link_submission_status(group_name, ctx.bot)
+            await ctx.send(f"✅ '{group_name}' 그룹의 링크 제출 현황이 갱신되었습니다.")
+        elif assignment_type == '문제풀이':
+            await update_group_weekly_status(group_name, ctx.bot)
+            await ctx.send(f"✅ '{group_name}' 그룹의 문제풀이 현황이 갱신되었습니다.")
+
+    @group_assignment_group.command(name='삭제')
+    @commands.has_permissions(administrator=True)
+    async def group_assignment_delete(ctx, assignment_type: str, *, group_name: str):
+        """그룹 과제 삭제 (관리자 전용)
+        
+        assignment_type: '링크제출' 또는 '문제풀이'
+        - DB에서 정보만 삭제 (메시지는 채널에 그대로 남음)
+        """
+        if assignment_type not in ['링크제출', '문제풀이']:
+            await ctx.send("❌ 과제 유형은 '링크제출' 또는 '문제풀이'만 가능합니다.")
+            return
+
+        data = load_data()
+        role_name = find_role_by_group_name(group_name, data)
+        if not role_name:
+            await ctx.send(
+                f"❌ '{group_name}' 그룹을 찾을 수 없습니다.\n💡 `/그룹 목록` 명령어로 등록된 그룹을 확인하세요."
+            )
+            return
+
+        if assignment_type == '링크제출':
+            from domain.link_submission import (
+                get_group_link_submission_status,
+                delete_group_link_submission_status,
+            )
+            info = get_group_link_submission_status(group_name)
+            if not info:
+                await ctx.send(f"❌ '{group_name}' 그룹의 링크 제출 메시지를 찾을 수 없습니다.")
+                return
+            delete_group_link_submission_status(group_name)
+            channel = ctx.guild.get_channel(int(info['channel_id']))
+            channel_name = channel.mention if channel else f"<#{info['channel_id']}>"
+            await ctx.send(
+                f"✅ '{group_name}' 그룹의 링크 제출 메시지 정보가 삭제되었습니다.\n"
+                f"📝 메시지는 {channel_name}에 그대로 남아있습니다."
+            )
+        elif assignment_type == '문제풀이':
+            info = get_group_weekly_status(group_name)
+            if not info:
+                await ctx.send(f"❌ '{group_name}' 그룹의 주간 현황 메시지를 찾을 수 없습니다.")
+                return
+            delete_group_weekly_status(group_name)
+            channel = ctx.guild.get_channel(int(info['channel_id']))
+            channel_name = channel.mention if channel else f"<#{info['channel_id']}>"
+            await ctx.send(
+                f"✅ '{group_name}' 그룹의 주간 현황 메시지 정보가 삭제되었습니다.\n"
+                f"📝 메시지는 {channel_name}에 그대로 남아있습니다."
+            )
+
+    @group_assignment_group.command(name='목록')
+    @commands.has_permissions(administrator=True)
+    async def group_assignment_list(ctx, *, group_name: str):
+        """그룹 과제 목록 확인 (관리자 전용)
+        
+        특정 그룹의 링크제출과 문제풀이 현황 메시지 목록을 확인합니다.
+        """
+        from common.database import (
+            get_group_weekly_status,
+            get_group_link_submission_status,
+        )
+        
+        data = load_data()
+        role_name = find_role_by_group_name(group_name, data)
+        if not role_name:
+            await ctx.send(
+                f"❌ '{group_name}' 그룹을 찾을 수 없습니다.\n💡 `/그룹 목록` 명령어로 등록된 그룹을 확인하세요."
+            )
+            return
+        
+        # 링크제출 현황 확인
+        link_status = get_group_link_submission_status(group_name)
+        # 문제풀이 현황 확인
+        problem_status = get_group_weekly_status(group_name)
+        
+        if not link_status and not problem_status:
+            await ctx.send(f"❌ '{group_name}' 그룹에 생성된 과제가 없습니다.")
+            return
+        
+        embed = discord.Embed(
+            title=f"📋 '{group_name}' 그룹 과제 목록",
+            color=discord.Color.blue()
+        )
+        
+        now = datetime.now()
+        assignment_list = []
+        
+        # 링크제출 현황
+        if link_status:
+            channel_id = link_status['channel_id']
+            week_start = datetime.fromisoformat(link_status['week_start'])
+            week_end = datetime.fromisoformat(link_status['week_end'])
+            
+            channel = ctx.guild.get_channel(int(channel_id))
+            channel_name = channel.mention if channel else f"<#{channel_id}>"
+            
+            if now < week_start:
+                status = "⏳ 시작 전"
+            elif week_start <= now <= week_end:
+                status = "🟢 진행 중"
+            else:
+                status = "🔴 종료됨"
+            
+            assignment_list.append(
+                f"**📝 링크제출**\n"
+                f"채널: {channel_name}\n"
+                f"기간: {week_start.strftime('%Y-%m-%d')} ~ {week_end.strftime('%Y-%m-%d %H:%M')}\n"
+                f"상태: {status}\n"
+            )
+        
+        # 문제풀이 현황
+        if problem_status:
+            channel_id = problem_status['channel_id']
+            week_start = datetime.fromisoformat(problem_status['week_start'])
+            week_end = datetime.fromisoformat(problem_status['week_end'])
+            
+            channel = ctx.guild.get_channel(int(channel_id))
+            channel_name = channel.mention if channel else f"<#{channel_id}>"
+            
+            if now < week_start:
+                status = "⏳ 시작 전"
+            elif week_start <= now <= week_end:
+                status = "🟢 진행 중"
+            else:
+                status = "🔴 종료됨"
+            
+            assignment_list.append(
+                f"**📊 문제풀이**\n"
+                f"채널: {channel_name}\n"
+                f"기간: {week_start.strftime('%Y-%m-%d %H:%M')} ~ {week_end.strftime('%Y-%m-%d %H:%M')}\n"
+                f"상태: {status}\n"
+            )
+        
+        embed.description = "\n\n".join(assignment_list) if assignment_list else "과제 없음"
+        await ctx.send(embed=embed)
 
     @group_group.command(name='주간현황목록')
     @commands.has_permissions(administrator=True)
