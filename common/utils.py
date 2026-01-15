@@ -6,8 +6,15 @@ import json
 import hashlib
 import secrets
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+
+# 한국 시간대 (KST, UTC+9)
+KST = timezone(timedelta(hours=9))
+
+def get_kst_now() -> datetime:
+    """한국 시간(KST) 현재 시간 반환"""
+    return datetime.now(KST)
 
 # 데이터 저장 파일
 DATA_FILE = 'data.json'

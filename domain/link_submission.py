@@ -4,7 +4,7 @@
 import discord
 from discord.ext import commands, tasks
 from datetime import datetime, timedelta, time
-from common.utils import load_data
+from common.utils import load_data, get_kst_now
 from common.database import (
     get_role_users,
     save_group_link_submission_status,
@@ -48,7 +48,7 @@ async def update_link_submission_status(group_name: str, bot_instance):
     week_start = datetime.fromisoformat(status_info['week_start'])
     week_end = datetime.fromisoformat(status_info['week_end'])
 
-    now = datetime.now()
+    now = get_kst_now()  # 한국 시간 사용
     # 기간 밖이면 갱신하지 않음
     if not (week_start <= now <= week_end):
         return
@@ -250,7 +250,7 @@ class LinkSubmissionView(discord.ui.View):
 
         week_start = datetime.fromisoformat(info['week_start'])
         week_end = datetime.fromisoformat(info['week_end'])
-        now = datetime.now()
+        now = get_kst_now()  # 한국 시간 사용
 
         if not (week_start <= now <= week_end):
             if interaction.response.is_done():
@@ -289,7 +289,7 @@ class LinkSubmissionView(discord.ui.View):
 
         week_start = datetime.fromisoformat(info['week_start'])
         week_end = datetime.fromisoformat(info['week_end'])
-        now = datetime.now()
+        now = get_kst_now()  # 한국 시간 사용
 
         if not (week_start <= now <= week_end):
             if interaction.response.is_done():
