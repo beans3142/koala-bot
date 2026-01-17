@@ -13,7 +13,7 @@ from common.database import (
     get_all_group_weekly_status,
     delete_group_weekly_status,
 )
-from common.boj_utils import get_weekly_solved_count
+from common.boj_utils import get_weekly_solved_count, get_weekly_solved_from_boj_status
 from discord.ext import tasks
 
 def find_role_by_group_name(group_name: str, data: dict) -> str:
@@ -925,6 +925,138 @@ def setup(bot):
                             problems_str = ", ".join(map(str, problems_sorted[:15]))
                             remaining = len(problems_sorted) - 15
                             member_list.append(f"{i}. {boj_handle} - {status_icon} {solved_count}개 [{problems_str}, ... 외 {remaining}개]")
+        
+        if len(results) > 25:
+            member_list.append(f"\n... 외 {len(results) - 25}명")
+        
+        embed.add_field(
+            name="멤버별 문제풀이 현황",
+            value="\n".join(member_list) if member_list else "멤버 없음",
+            inline=False
+        )
+        
+        # 통계
+        active_members = len([r for r in results if r['solved_count'] > 0])
+        embed.add_field(
+            name="📈 통계",
+            value=f"총 멤버: {len(results)}명\n문제 풀은 멤버: {active_members}명\n총 해결한 문제: {total_solved}개",
+            inline=False
+        )
+        
+        await ctx.send(embed=embed)
+
+    @group_group.command(name='백준문제풀이현황')
+    @commands.has_permissions(administrator=True)
+    async def group_boj_problem_status(ctx, *, group_name: str):
+        """특정 그룹 멤버들의 주간 백준 문제풀이 현황 - 백준 직접 크롤링 (관리자 전용)
+        기간: 월요일 00시 ~ 다음 주 월요일 01시
+        """
+        data = load_data()
+        
+        # 그룹 이름으로 역할 찾기
+        role_name = find_role_by_group_name(group_name, data)
+        if not role_name:
+            await ctx.send(f"❌ '{group_name}' 그룹을 찾을 수 없습니다.\n💡 `/그룹 목록` 명령어로 등록된 그룹을 확인하세요.")
+            return
+        
+        # 역할이 등록되어 있는지 확인
+        if role_name not in data.get('role_tokens', {}):
+            await ctx.send(f"❌ '{group_name}' 그룹에 연결된 역할('{role_name}')이 등록되지 않았습니다.")
+            return
+        
+        # 역할을 가진 유저 목록 가져오기
+        users = get_role_users(role_name)
+        
+        if not users:
+            await ctx.send(f"❌ '{group_name}' 그룹에 멤버가 없습니다.")
+            return
+        
+        # 기준 주 계산 (명령어 실행일이 속한 주의 월요일 00시 ~ 다음 주 월요일 01시)
+        today = get_kst_now()
+        days_since_monday = today.weekday()  # 0=월요일
+        week_start = today - timedelta(days=days_since_monday)
+        week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_end = week_start + timedelta(days=7, hours=1)
+        
+        await ctx.send(f"🔄 주간 백준 문제풀이 현황을 조회하는 중... (백준 직접 크롤링)\n📅 기간: {week_start.strftime('%Y-%m-%d %H:%M')} ~ {week_end.strftime('%Y-%m-%d %H:%M')}")
+        
+        # 각 유저의 백준 문제풀이 현황 조회
+        results = []
+        for user_info in users:
+            username = user_info['username']
+            boj_handle = user_info.get('boj_handle')
+            
+            if not boj_handle or boj_handle == '미등록':
+                results.append({
+                    'username': username,
+                    'boj_handle': boj_handle or '미등록',
+                    'solved_count': 0,
+                    'status': '❌ BOJ 핸들 미등록'
+                })
+                continue
+            
+            # 백준 status 페이지에서 직접 크롤링
+            try:
+                solved_data = await get_weekly_solved_from_boj_status(boj_handle, week_start, week_end)
+                results.append({
+                    'username': username,
+                    'boj_handle': boj_handle,
+                    'solved_count': solved_data['count'],
+                    'problems': solved_data.get('problems', []),
+                    'status': '✅' if solved_data['count'] > 0 else '⚠️'
+                })
+            except Exception as e:
+                results.append({
+                    'username': username,
+                    'boj_handle': boj_handle,
+                    'solved_count': 0,
+                    'status': f'❌ 오류: {str(e)[:30]}'
+                })
+        
+        # 결과 정렬 (해결한 문제 수 많은 순)
+        results.sort(key=lambda x: x['solved_count'], reverse=True)
+        
+        # 임베드 생성
+        embed = discord.Embed(
+            title=f"📊 '{group_name}' 그룹 백준 문제풀이 현황 (백준 직접 크롤링)",
+            description=f"기간: {week_start.strftime('%Y-%m-%d %H:%M')} ~ {week_end.strftime('%Y-%m-%d %H:%M')} (월~월)",
+            color=discord.Color.blue()
+        )
+        
+        # 멤버별 현황 표시 (최대 25명, Discord 임베드 제한)
+        member_list = []
+        total_solved = 0
+        for i, result in enumerate(results[:25], 1):
+            status_icon = result['status']
+            username = result['username']
+            boj_handle = result['boj_handle']
+            solved_count = result['solved_count']
+            total_solved += solved_count
+            
+            rank_label = {1: "👑", 2: "🥈", 3: "🥉"}.get(i, f"{i}.")
+            
+            if boj_handle == '미등록':
+                member_list.append(f"{rank_label} {username} - {status_icon} BOJ 핸들 미등록")
+            else:
+                problems = result.get('problems', [])
+                if solved_count == 0:
+                    member_list.append(f"{rank_label} {username} ({boj_handle}) - {status_icon} 0개")
+                else:
+                    if not problems:
+                        member_list.append(f"{rank_label} {username} ({boj_handle}) - {status_icon} {solved_count}개")
+                    else:
+                        problems_sorted = sorted(problems)
+                        if len(problems_sorted) <= 15:
+                            problems_str = ", ".join(map(str, problems_sorted))
+                            member_list.append(
+                                f"{rank_label} {username} ({boj_handle}) - {status_icon} {solved_count}개 [{problems_str}]"
+                            )
+                        else:
+                            problems_str = ", ".join(map(str, problems_sorted[:15]))
+                            remaining = len(problems_sorted) - 15
+                            member_list.append(
+                                f"{rank_label} {username} ({boj_handle}) - {status_icon} {solved_count}개 [{problems_str}, ... 외 {remaining}개]"
+                            )
         
         if len(results) > 25:
             member_list.append(f"\n... 외 {len(results) - 25}명")
