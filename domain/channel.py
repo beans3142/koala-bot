@@ -978,7 +978,14 @@ def setup(bot):
         week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
         week_end = week_start + timedelta(days=7, hours=1)
         
-        await ctx.send(f"🔄 주간 백준 문제풀이 현황을 조회하는 중... (백준 직접 크롤링)\n📅 기간: {week_start.strftime('%Y-%m-%d %H:%M')} ~ {week_end.strftime('%Y-%m-%d %H:%M')}")
+        status_msg = await ctx.send(f"🔄 주간 백준 문제풀이 현황을 조회하는 중... (백준 직접 크롤링)\n📅 기간: {week_start.strftime('%Y-%m-%d %H:%M')} ~ {week_end.strftime('%Y-%m-%d %H:%M')}")
+        
+        # 상태 메시지 업데이트 콜백 함수
+        async def update_status(message: str):
+            try:
+                await status_msg.edit(content=f"{status_msg.content}\n{message}")
+            except:
+                pass  # 메시지 편집 실패해도 계속 진행
         
         # 각 유저의 백준 문제풀이 현황 조회
         results = []
@@ -997,7 +1004,7 @@ def setup(bot):
             
             # 백준 status 페이지에서 직접 크롤링
             try:
-                solved_data = await get_weekly_solved_from_boj_status(boj_handle, week_start, week_end)
+                solved_data = await get_weekly_solved_from_boj_status(boj_handle, week_start, week_end, status_callback=update_status)
                 results.append({
                     'username': username,
                     'boj_handle': boj_handle,
