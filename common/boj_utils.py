@@ -4,6 +4,7 @@
 import aiohttp
 from bs4 import BeautifulSoup
 import re
+import os
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta, timezone
 
@@ -276,6 +277,98 @@ async def get_weekly_solved_count(baekjoon_id: str, start_date: datetime, end_da
         print(f"주간 해결한 문제 수 조회 오류(solved.ac): {e}")
         return {'count': 0, 'problems': []}
 
+async def get_free_proxies(max_proxies: int = 20) -> List[str]:
+    """
+    free-proxy-list.net에서 무료 프록시 목록 가져오기
+    
+    Args:
+        max_proxies: 가져올 최대 프록시 수
+    
+    Returns:
+        프록시 URL 리스트 (예: ['http://123.45.67.89:8080', ...])
+    """
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        proxies = []
+        async with aiohttp.ClientSession(headers=headers) as session:
+            # free-proxy-list.net의 프록시 목록 페이지
+            url = "https://free-proxy-list.net/"
+            
+            async with session.get(url) as response:
+                if response.status != 200:
+                    print(f"[프록시 목록] HTTP {response.status} 에러")
+                    return []
+                
+                html = await response.text()
+                soup = BeautifulSoup(html, 'html.parser')
+                
+                # 프록시 테이블 찾기
+                table = soup.find('table', class_='table table-striped table-bordered')
+                if not table:
+                    # 다른 가능한 테이블 선택자 시도
+                    table = soup.find('table', id='proxylisttable')
+                
+                if not table:
+                    print("[프록시 목록] 프록시 테이블을 찾을 수 없음")
+                    return []
+                
+                tbody = table.find('tbody')
+                if not tbody:
+                    return []
+                
+                rows = tbody.find_all('tr')
+                for row in rows[:max_proxies]:
+                    cells = row.find_all('td')
+                    if len(cells) >= 2:
+                        try:
+                            ip = cells[0].get_text(strip=True)
+                            port = cells[1].get_text(strip=True)
+                            
+                            # IP와 포트가 유효한지 확인
+                            if ip and port and port.isdigit():
+                                proxy_url = f"http://{ip}:{port}"
+                                proxies.append(proxy_url)
+                        except:
+                            continue
+        
+        print(f"[프록시 목록] {len(proxies)}개의 프록시 가져옴")
+        return proxies
+    except Exception as e:
+        print(f"[프록시 목록] 오류: {e}")
+        return []
+
+async def test_proxy(proxy_url: str, test_url: str = "https://www.acmicpc.net/", timeout: int = 5) -> bool:
+    """
+    프록시가 작동하는지 테스트
+    
+    Args:
+        proxy_url: 프록시 URL (예: 'http://123.45.67.89:8080')
+        test_url: 테스트할 URL
+        timeout: 타임아웃 (초)
+    
+    Returns:
+        프록시가 작동하면 True
+    """
+    try:
+        from aiohttp import ProxyConnector
+        import asyncio
+        
+        connector = ProxyConnector.from_url(proxy_url)
+        timeout_obj = aiohttp.ClientTimeout(total=timeout)
+        
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout_obj) as session:
+            async with session.get(test_url) as response:
+                if response.status == 200:
+                    return True
+                return False
+    except asyncio.TimeoutError:
+        return False
+    except Exception as e:
+        return False
+
 async def get_weekly_solved_from_boj_status(baekjoon_id: str, start_date: datetime, end_date: datetime) -> Dict:
     """
     백준 status 페이지에서 직접 크롤링하여 특정 기간 동안 해결한 문제 수 및 문제 목록 가져오기
@@ -313,7 +406,40 @@ async def get_weekly_solved_from_boj_status(baekjoon_id: str, start_date: dateti
         
         import asyncio
         
-        async with aiohttp.ClientSession(headers=headers) as session:
+        # 프록시 설정 (환경변수에서 읽기, 없으면 자동 프록시 사용)
+        proxy = os.getenv('HTTP_PROXY') or os.getenv('HTTPS_PROXY')
+        
+        # 백준 크롤링은 항상 자동 프록시 모드 사용 (환경변수 프록시가 없는 경우)
+        # 환경변수에 프록시가 없으면 자동으로 무료 프록시 목록에서 가져와서 사용
+        if not proxy:
+            print("[백준 크롤링] 자동 프록시 모드 활성화 - 프록시 목록 가져오는 중...")
+            free_proxies = await get_free_proxies(max_proxies=10)
+            
+            # 프록시 테스트 및 선택
+            working_proxy = None
+            for proxy_url in free_proxies:
+                print(f"[백준 크롤링] 프록시 테스트 중: {proxy_url}")
+                if await test_proxy(proxy_url):
+                    working_proxy = proxy_url
+                    print(f"[백준 크롤링] ✅ 작동하는 프록시 발견: {working_proxy}")
+                    break
+                await asyncio.sleep(0.5)  # 테스트 간 딜레이
+            
+            if working_proxy:
+                proxy = working_proxy
+            else:
+                print("[백준 크롤링] ⚠️ 작동하는 프록시를 찾을 수 없음 - 프록시 없이 시도")
+        
+        connector = None
+        if proxy:
+            try:
+                from aiohttp import ProxyConnector
+                connector = ProxyConnector.from_url(proxy)
+                print(f"[백준 크롤링] 프록시 사용: {proxy}")
+            except Exception as e:
+                print(f"[백준 크롤링] 프록시 설정 오류: {e}")
+        
+        async with aiohttp.ClientSession(headers=headers, connector=connector) as session:
             # 첫 페이지는 top 파라미터 없이 시작
             top = None
             max_pages = 50  # 최대 50페이지까지 확인 (약 5000개 제출)

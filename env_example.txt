@@ -4,3 +4,9 @@
 
 DISCORD_BOT_TOKEN=your_bot_token_here
 
+# 백준 크롤링 프록시 설정 (선택사항)
+# 클라우드 환경에서 403 FORBIDDEN 에러가 발생할 때 프록시를 사용합니다
+# 프록시가 없으면 이 줄을 주석 처리하거나 삭제하세요
+# HTTP_PROXY=http://proxy.example.com:8080
+# HTTPS_PROXY=http://proxy.example.com:8080
+# 인증이 필요한 경우: HTTP_PROXY=http://username:password@proxy.example.com:8080
