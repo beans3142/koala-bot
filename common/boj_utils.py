@@ -283,6 +283,9 @@ async def get_weekly_solved_from_boj_status(baekjoon_id: str, start_date: dateti
     URL 패턴: https://www.acmicpc.net/status?user_id={baekjoon_id}&result_id=4&top={top}
     top 파라미터는 제출 ID를 사용하여 페이지네이션을 수행합니다.
     
+    주의: 클라우드 환경에서 403 FORBIDDEN이 발생할 수 있습니다.
+    이 경우 solved.ac API로 폴백하거나, 프록시 사용을 고려하세요.
+    
     Args:
         baekjoon_id: 백준 아이디
         start_date: 시작 날짜 (datetime)
@@ -293,9 +296,22 @@ async def get_weekly_solved_from_boj_status(baekjoon_id: str, start_date: dateti
     """
     try:
         solved_problems = set()
+        # 더 정교한 헤더 설정 (403 우회 시도)
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Referer': 'https://www.acmicpc.net/',
         }
+        
+        import asyncio
         
         async with aiohttp.ClientSession(headers=headers) as session:
             # 첫 페이지는 top 파라미터 없이 시작
@@ -311,10 +327,34 @@ async def get_weekly_solved_from_boj_status(baekjoon_id: str, start_date: dateti
                     url = f"https://www.acmicpc.net/status?user_id={baekjoon_id}&result_id=4&top={top}"
                 
                 async with session.get(url) as response:
+                    # 403 FORBIDDEN 에러 처리
+                    if response.status == 403:
+                        print(f"[백준 크롤링] 403 FORBIDDEN 에러 발생 - IP 차단 가능성")
+                        # 첫 번째 요청에서 403이면 전체 실패로 처리
+                        if page_count == 0:
+                            print(f"[백준 크롤링] solved.ac API로 폴백 시도...")
+                            # solved.ac로 폴백 (문제 번호는 없지만 개수는 알 수 있음)
+                            fallback_result = await get_weekly_solved_count(baekjoon_id, start_date, end_date)
+                            return fallback_result
+                        break
+                    
                     if response.status != 200:
+                        print(f"[백준 크롤링] HTTP {response.status} 에러")
                         break
                     
                     html = await response.text()
+                    
+                    # AWS WAF 챌린지 페이지 확인
+                    if 'awsWafCookieDomainList' in html or 'gokuProps' in html:
+                        print(f"[백준 크롤링] AWS WAF 챌린지 페이지 감지")
+                        if page_count == 0:
+                            # 첫 페이지에서 WAF 감지되면 폴백
+                            print(f"[백준 크롤링] solved.ac API로 폴백 시도...")
+                            fallback_result = await get_weekly_solved_count(baekjoon_id, start_date, end_date)
+                            return fallback_result
+                        await asyncio.sleep(5)  # WAF 챌린지 대기
+                        continue
+                    
                     soup = BeautifulSoup(html, 'html.parser')
                     
                     # status 테이블 찾기
@@ -417,6 +457,9 @@ async def get_weekly_solved_from_boj_status(baekjoon_id: str, start_date: dateti
                     # 이 페이지에 유효한 제출이 없으면 더 이상 확인하지 않음
                     if not page_has_valid:
                         break
+                    
+                    # 요청 간 딜레이 추가 (403 우회 및 Rate limiting 방지)
+                    await asyncio.sleep(0.5)
                     
                     page_count += 1
         
