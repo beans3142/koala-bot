@@ -89,7 +89,7 @@ async def on_interaction(interaction: discord.Interaction):
 # 모듈 로드
 def load_modules():
     """모든 모듈 로드"""
-    from domain import role, channel, study, user, link_submission
+    from domain import role, channel, study, user, link_submission, problem_set
     from common import help
     
     role.setup(bot)
@@ -98,6 +98,7 @@ def load_modules():
     user.setup(bot)
     study.setup(bot)
     link_submission.setup(bot)
+    problem_set.setup(bot)
 
 # 봇 실행
 if __name__ == '__main__':

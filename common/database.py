@@ -151,6 +151,28 @@ def init_database():
         )
     ''')
     
+    # 문제집 테이블
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS problem_sets (
+            name TEXT PRIMARY KEY,
+            problem_ids TEXT,
+            created_at TEXT,
+            created_by TEXT,
+            updated_at TEXT
+        )
+    ''')
+    
+    # 모의테스트 테이블
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS mock_tests (
+            name TEXT PRIMARY KEY,
+            problem_ids TEXT,
+            created_at TEXT,
+            created_by TEXT,
+            updated_at TEXT
+        )
+    ''')
+    
     conn.commit()
     conn.close()
 
@@ -795,6 +817,174 @@ def delete_all_link_submissions_by_group(group_name: str):
     cursor = conn.cursor()
     
     cursor.execute('DELETE FROM link_submission_data WHERE group_name = ?', (group_name,))
+    conn.commit()
+    conn.close()
+
+# ==================== 문제집 관리 ====================
+
+def create_problem_set(name: str, problem_ids: List[int], created_by: str):
+    """문제집 생성"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    now = datetime.now().isoformat()
+    problem_ids_str = ','.join(map(str, problem_ids))
+    
+    cursor.execute('''
+        INSERT OR REPLACE INTO problem_sets (name, problem_ids, created_at, created_by, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (name, problem_ids_str, now, created_by, now))
+    
+    conn.commit()
+    conn.close()
+
+def get_problem_set(name: str) -> Optional[Dict]:
+    """문제집 정보 가져오기"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM problem_sets WHERE name = ?', (name,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if row:
+        result = dict(row)
+        # 문제 번호 리스트로 변환
+        if result['problem_ids']:
+            result['problem_ids'] = [int(x) for x in result['problem_ids'].split(',') if x.strip().isdigit()]
+        else:
+            result['problem_ids'] = []
+        return result
+    return None
+
+def get_all_problem_sets() -> List[Dict]:
+    """모든 문제집 목록 가져오기"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM problem_sets ORDER BY created_at DESC')
+    rows = cursor.fetchall()
+    conn.close()
+    
+    result = []
+    for row in rows:
+        item = dict(row)
+        if item['problem_ids']:
+            item['problem_ids'] = [int(x) for x in item['problem_ids'].split(',') if x.strip().isdigit()]
+        else:
+            item['problem_ids'] = []
+        result.append(item)
+    
+    return result
+
+def update_problem_set(name: str, problem_ids: List[int]):
+    """문제집 수정"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    now = datetime.now().isoformat()
+    problem_ids_str = ','.join(map(str, problem_ids))
+    
+    cursor.execute('''
+        UPDATE problem_sets 
+        SET problem_ids = ?, updated_at = ?
+        WHERE name = ?
+    ''', (problem_ids_str, now, name))
+    
+    conn.commit()
+    conn.close()
+
+def delete_problem_set(name: str):
+    """문제집 삭제"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('DELETE FROM problem_sets WHERE name = ?', (name,))
+    
+    conn.commit()
+    conn.close()
+
+# ==================== 모의테스트 관리 ====================
+
+def create_mock_test(name: str, problem_ids: List[int], created_by: str):
+    """모의테스트 생성"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    now = datetime.now().isoformat()
+    problem_ids_str = ','.join(map(str, problem_ids))
+    
+    cursor.execute('''
+        INSERT OR REPLACE INTO mock_tests (name, problem_ids, created_at, created_by, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (name, problem_ids_str, now, created_by, now))
+    
+    conn.commit()
+    conn.close()
+
+def get_mock_test(name: str) -> Optional[Dict]:
+    """모의테스트 정보 가져오기"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM mock_tests WHERE name = ?', (name,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if row:
+        result = dict(row)
+        # 문제 번호 리스트로 변환
+        if result['problem_ids']:
+            result['problem_ids'] = [int(x) for x in result['problem_ids'].split(',') if x.strip().isdigit()]
+        else:
+            result['problem_ids'] = []
+        return result
+    return None
+
+def get_all_mock_tests() -> List[Dict]:
+    """모든 모의테스트 목록 가져오기"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM mock_tests ORDER BY created_at DESC')
+    rows = cursor.fetchall()
+    conn.close()
+    
+    result = []
+    for row in rows:
+        item = dict(row)
+        if item['problem_ids']:
+            item['problem_ids'] = [int(x) for x in item['problem_ids'].split(',') if x.strip().isdigit()]
+        else:
+            item['problem_ids'] = []
+        result.append(item)
+    
+    return result
+
+def update_mock_test(name: str, problem_ids: List[int]):
+    """모의테스트 수정"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    now = datetime.now().isoformat()
+    problem_ids_str = ','.join(map(str, problem_ids))
+    
+    cursor.execute('''
+        UPDATE mock_tests 
+        SET problem_ids = ?, updated_at = ?
+        WHERE name = ?
+    ''', (problem_ids_str, now, name))
+    
+    conn.commit()
+    conn.close()
+
+def delete_mock_test(name: str):
+    """모의테스트 삭제"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('DELETE FROM mock_tests WHERE name = ?', (name,))
+    
     conn.commit()
     conn.close()
 

@@ -158,6 +158,58 @@ async def get_user_solved_problems(baekjoon_id: str, start_date: datetime = None
         print(f"해결한 문제 목록 가져오기 오류: {e}")
         return []
 
+async def get_user_solved_problems_from_solved_ac(baekjoon_id: str) -> List[int]:
+    """
+    solved.ac에서 사용자가 해결한 문제 목록 가져오기
+    https://solved.ac/profile/{handle}/solved 페이지 크롤링
+    
+    Args:
+        baekjoon_id: 백준 아이디
+    
+    Returns:
+        해결한 문제 번호 리스트
+    """
+    try:
+        url = f"https://solved.ac/profile/{baekjoon_id}/solved"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+        }
+        
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.get(url) as response:
+                if response.status != 200:
+                    logger.warning(f"[solved.ac 크롤링] HTTP {response.status} 에러: {url}")
+                    return []
+                
+                html = await response.text()
+                soup = BeautifulSoup(html, 'html.parser')
+                
+                # 문제 번호 추출 (테이블에서)
+                solved_problems = []
+                
+                # 테이블에서 문제 번호 링크 찾기
+                # 예: <a href="/problem/1000">1000</a>
+                problem_links = soup.find_all('a', href=re.compile(r'/problem/\d+'))
+                
+                for link in problem_links:
+                    href = link.get('href', '')
+                    match = re.search(r'/problem/(\d+)', href)
+                    if match:
+                        problem_id = int(match.group(1))
+                        solved_problems.append(problem_id)
+                
+                # 중복 제거 및 정렬
+                solved_problems = sorted(list(set(solved_problems)))
+                
+                logger.info(f"[solved.ac 크롤링] {baekjoon_id} - 해결한 문제 {len(solved_problems)}개 발견")
+                return solved_problems
+                
+    except Exception as e:
+        logger.error(f"[solved.ac 크롤링] 오류: {e}", exc_info=True)
+        return []
+
 async def verify_user_exists(baekjoon_id: str) -> bool:
     """
     백준(BOJ) 사용자 존재 여부 확인
