@@ -122,8 +122,10 @@ def init_database():
             week_end TEXT,
             last_updated TEXT
         )
-        
-        # 문제집 과제 상태 테이블
+    ''')
+    
+    # 문제집 과제 상태 테이블
+    cursor.execute('''
         CREATE TABLE IF NOT EXISTS group_problem_set_status (
             group_name TEXT,
             problem_set_name TEXT,
