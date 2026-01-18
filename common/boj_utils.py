@@ -223,13 +223,16 @@ async def _check_problems_via_search_api(baekjoon_id: str, target_problems: List
                 solved_problems = []
                 all_found_problems = []  # 디버깅용: 검색 결과의 모든 문제
                 
-                # 테이블에서 문제 번호 찾기 (여러 방법 시도)
-                # 방법 1: 링크에서 추출
+                # 테이블에서 문제 번호 찾기
+                # 방법 1: 링크의 href 속성에서 추출 (가장 확실한 방법)
+                # href에 /problem/ 숫자가 포함된 모든 링크 찾기
                 problem_links = soup.find_all('a', href=re.compile(r'/problem/\d+'))
                 found_ids_from_links = set()
                 
                 for link in problem_links:
                     href = link.get('href', '')
+                    # 전체 URL 또는 상대 경로에서 문제 번호 추출
+                    # 예: /problem/1330, https://www.acmicpc.net/problem/1330 모두 매칭
                     match = re.search(r'/problem/(\d+)', href)
                     if match:
                         problem_id = int(match.group(1))
@@ -240,16 +243,18 @@ async def _check_problems_via_search_api(baekjoon_id: str, target_problems: List
                 
                 # 방법 2: 테이블 셀에서 직접 문제 번호 찾기 (링크가 없는 경우 대비)
                 # 테이블의 모든 텍스트에서 문제 번호 패턴 찾기
+                # 하지만 이미 링크에서 찾은 문제는 제외
                 table_cells = soup.find_all(['td', 'th'])
                 for cell in table_cells:
                     text = cell.get_text(strip=True)
                     # 문제 번호 패턴 찾기 (예: "Sprout1000", "Bronze I2729", "1000" 등)
-                    # 숫자로 시작하거나 숫자로 끝나는 패턴
-                    matches = re.findall(r'\b(\d{4,})\b', text)  # 4자리 이상 숫자
+                    # 4자리 이상 숫자만 (문제 번호는 보통 4자리 이상)
+                    matches = re.findall(r'\b(\d{4,})\b', text)
                     for match_str in matches:
                         try:
                             problem_id = int(match_str)
                             # target_problems 범위 내의 문제 번호인지 확인 (너무 큰 숫자 제외)
+                            # 그리고 이미 링크에서 찾은 문제는 제외
                             if problem_id < 1000000 and problem_id not in found_ids_from_links:
                                 all_found_problems.append(problem_id)
                                 if problem_id in target_set:
