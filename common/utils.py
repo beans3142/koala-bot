@@ -171,7 +171,7 @@ def parse_deadline(deadline_str: str) -> Optional[datetime]:
     """기한 파싱 (parse_datetime의 별칭, 호환성 유지)"""
     return parse_datetime(deadline_str)
 
-def get_bot_notification_channel(guild) -> Optional[discord.TextChannel]:
+def get_bot_notification_channel(guild):
     """
     봇 알림 채널 찾기
     운영진 카테고리 안의 "봇-알림-채널"을 찾습니다.
@@ -182,6 +182,11 @@ def get_bot_notification_channel(guild) -> Optional[discord.TextChannel]:
     Returns:
         알림 채널 또는 None
     """
+    try:
+        import discord
+    except ImportError:
+        return None
+    
     if not guild:
         return None
     
@@ -208,7 +213,7 @@ def get_bot_notification_channel(guild) -> Optional[discord.TextChannel]:
     
     return notification_channel
 
-async def send_bot_notification(guild, title: str, description: str, color: discord.Color = discord.Color.blue()):
+async def send_bot_notification(guild, title: str, description: str, color=None):
     """
     봇 알림 채널에 알림 메시지 전송
     
@@ -219,6 +224,10 @@ async def send_bot_notification(guild, title: str, description: str, color: disc
         color: 임베드 색상 (기본값: blue)
     """
     try:
+        import discord
+        if color is None:
+            color = discord.Color.blue()
+        
         channel = get_bot_notification_channel(guild)
         if channel:
             embed = discord.Embed(
