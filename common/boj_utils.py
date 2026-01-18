@@ -223,18 +223,39 @@ async def _check_problems_via_search_api(baekjoon_id: str, target_problems: List
                 solved_problems = []
                 all_found_problems = []  # 디버깅용: 검색 결과의 모든 문제
                 
-                # 테이블에서 문제 번호 링크 찾기
+                # 테이블에서 문제 번호 찾기 (여러 방법 시도)
+                # 방법 1: 링크에서 추출
                 problem_links = soup.find_all('a', href=re.compile(r'/problem/\d+'))
+                found_ids_from_links = set()
                 
                 for link in problem_links:
                     href = link.get('href', '')
                     match = re.search(r'/problem/(\d+)', href)
                     if match:
                         problem_id = int(match.group(1))
+                        found_ids_from_links.add(problem_id)
                         all_found_problems.append(problem_id)
-                        # 정확히 target_problems에 있는 문제만 추가
                         if problem_id in target_set:
                             solved_problems.append(problem_id)
+                
+                # 방법 2: 테이블 셀에서 직접 문제 번호 찾기 (링크가 없는 경우 대비)
+                # 테이블의 모든 텍스트에서 문제 번호 패턴 찾기
+                table_cells = soup.find_all(['td', 'th'])
+                for cell in table_cells:
+                    text = cell.get_text(strip=True)
+                    # 문제 번호 패턴 찾기 (예: "Sprout1000", "Bronze I2729", "1000" 등)
+                    # 숫자로 시작하거나 숫자로 끝나는 패턴
+                    matches = re.findall(r'\b(\d{4,})\b', text)  # 4자리 이상 숫자
+                    for match_str in matches:
+                        try:
+                            problem_id = int(match_str)
+                            # target_problems 범위 내의 문제 번호인지 확인 (너무 큰 숫자 제외)
+                            if problem_id < 1000000 and problem_id not in found_ids_from_links:
+                                all_found_problems.append(problem_id)
+                                if problem_id in target_set:
+                                    solved_problems.append(problem_id)
+                        except ValueError:
+                            continue
                 
                 # 중복 제거 및 정렬
                 solved_problems = sorted(list(set(solved_problems)))
@@ -244,6 +265,11 @@ async def _check_problems_via_search_api(baekjoon_id: str, target_problems: List
                 unexpected = [pid for pid in all_found_problems if pid not in target_set]
                 if unexpected:
                     logger.debug(f"[solved.ac 검색 API] 검색 결과에 예상치 못한 문제 발견: {unexpected[:10]} (필터링됨)")
+                
+                # 디버깅: 누락된 문제 확인
+                missing = [pid for pid in target_set if pid not in solved_problems]
+                if missing:
+                    logger.warning(f"[solved.ac 검색 API] {baekjoon_id} - 목표 문제 중 누락된 문제: {missing[:10]} (검색 결과에 없음)")
                 
                 logger.info(f"[solved.ac 검색 API] {baekjoon_id} - 목표 문제 중 {len(solved_problems)}/{len(target_problems)}개 해결 (검색 결과: {len(all_found_problems)}개, 필터링 후: {len(solved_problems)}개)")
                 return solved_problems
