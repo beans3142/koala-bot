@@ -53,8 +53,8 @@ async def update_link_submission_status(group_name: str, bot_instance):
     week_end = ensure_kst(week_end)
 
     now = get_kst_now()  # 한국 시간 사용
-    # 기간 밖이면 갱신하지 않음
-    if not (week_start <= now <= week_end):
+    # 기간 밖이면 갱신하지 않음 (단, 월요일 01시 정각은 마지막 크롤링 허용)
+    if not (week_start <= now <= week_end + timedelta(minutes=5)):
         return
 
     channel = bot_instance.get_channel(channel_id)
@@ -214,10 +214,34 @@ async def link_submission_auto_update():
         week_start = ensure_kst(week_start)
         week_end = ensure_kst(week_end)
 
-        if week_start <= now <= week_end:
+        # 기간 내: 정상 크롤링
+        if week_start <= now < week_end:
             await update_link_submission_status(info['group_name'], _bot_for_link_submission)
-        elif now > week_end:
-            # 기간이 지난 그룹은 DB에서 정리 (메시지는 그대로 둠)
+        # 월요일 01시 정각: 마지막 크롤링 후 DB 삭제
+        elif now >= week_end and now < week_end + timedelta(minutes=5):
+            # 마지막 크롤링 수행
+            from common.logger import get_logger
+            logger = get_logger()
+            logger.info(f"[링크 제출] {info['group_name']} - 마지막 크롤링 수행 (월요일 01시)")
+            await update_link_submission_status(info['group_name'], _bot_for_link_submission)
+            # 크롤링 후 DB에서 정리 (메시지는 그대로 둠)
+            delete_group_link_submission_status(info['group_name'])
+            logger.info(f"[링크 제출] {info['group_name']} - DB에서 삭제됨")
+            
+            # 봇 알림 채널에 알림 전송
+            from common.utils import send_bot_notification
+            if _bot_for_link_submission and _bot_for_link_submission.guilds:
+                guild = _bot_for_link_submission.guilds[0]
+                await send_bot_notification(
+                    guild,
+                    "📝 링크 제출 현황 종료",
+                    f"**그룹:** {info['group_name']}\n"
+                    f"**기간:** {week_start.strftime('%Y-%m-%d %H:%M')} ~ {week_end.strftime('%Y-%m-%d %H:%M')}\n"
+                    f"**상태:** 주간 제출 현황이 종료되었고 DB에서 삭제되었습니다.",
+                    discord.Color.orange()
+                )
+        # 기간이 지난 경우: DB만 삭제 (이미 삭제되었을 수 있음)
+        elif now > week_end + timedelta(minutes=5):
             delete_group_link_submission_status(info['group_name'])
 
 
@@ -406,6 +430,18 @@ class LinkSubmissionModal(discord.ui.Modal, title="링크 제출"):
 
         # 메시지 갱신
         await update_link_submission_status(self.group_name, interaction.client)
+
+        # 봇 알림 채널에 알림 전송
+        from common.utils import send_bot_notification
+        await send_bot_notification(
+            interaction.guild,
+            "📝 과제 제출 알림",
+            f"**사용자:** {interaction.user.mention} ({interaction.user.display_name})\n"
+            f"**그룹:** {self.group_name}\n"
+            f"**제출 링크:** {len(links)}개\n"
+            f"**기간:** {datetime.fromisoformat(self.week_start).strftime('%Y-%m-%d')}",
+            discord.Color.green()
+        )
 
         await interaction.response.send_message(
             f"✅ 링크 제출이 완료되었습니다!\n제출한 링크: {len(links)}개", ephemeral=True

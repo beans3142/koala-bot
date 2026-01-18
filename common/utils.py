@@ -171,3 +171,65 @@ def parse_deadline(deadline_str: str) -> Optional[datetime]:
     """기한 파싱 (parse_datetime의 별칭, 호환성 유지)"""
     return parse_datetime(deadline_str)
 
+def get_bot_notification_channel(guild) -> Optional[discord.TextChannel]:
+    """
+    봇 알림 채널 찾기
+    운영진 카테고리 안의 "봇-알림-채널"을 찾습니다.
+    
+    Args:
+        guild: Discord Guild 객체
+    
+    Returns:
+        알림 채널 또는 None
+    """
+    if not guild:
+        return None
+    
+    # 운영진 카테고리 찾기
+    운영진_category = discord.utils.get(guild.categories, name="운영진")
+    if not 운영진_category:
+        # 대소문자 무시하여 찾기
+        for category in guild.categories:
+            if category.name.lower() == "운영진":
+                운영진_category = category
+                break
+    
+    if not 운영진_category:
+        return None
+    
+    # 봇-알림-채널 찾기
+    notification_channel = discord.utils.get(운영진_category.channels, name="봇-알림-채널")
+    if not notification_channel:
+        # 대소문자 무시하여 찾기
+        for channel in 운영진_category.channels:
+            if isinstance(channel, discord.TextChannel) and channel.name.lower() == "봇-알림-채널":
+                notification_channel = channel
+                break
+    
+    return notification_channel
+
+async def send_bot_notification(guild, title: str, description: str, color: discord.Color = discord.Color.blue()):
+    """
+    봇 알림 채널에 알림 메시지 전송
+    
+    Args:
+        guild: Discord Guild 객체
+        title: 알림 제목
+        description: 알림 내용
+        color: 임베드 색상 (기본값: blue)
+    """
+    try:
+        channel = get_bot_notification_channel(guild)
+        if channel:
+            embed = discord.Embed(
+                title=title,
+                description=description,
+                color=color,
+                timestamp=datetime.now(KST)
+            )
+            await channel.send(embed=embed)
+    except Exception as e:
+        # 알림 전송 실패해도 메인 기능은 계속 진행
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"봇 알림 전송 실패: {e}")

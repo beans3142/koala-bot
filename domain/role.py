@@ -77,6 +77,16 @@ def setup(bot):
             }
             save_data(data)
             
+            # 봇 알림 채널에 알림 전송
+            from common.utils import send_bot_notification
+            await send_bot_notification(
+                ctx.guild,
+                "🎭 역할 생성",
+                f"**역할명:** {role_name}\n"
+                f"**생성자:** {ctx.author.mention}",
+                discord.Color.green()
+            )
+            
             # 토큰을 DM으로 전송 (보안을 위해)
             try:
                 await ctx.author.send(
@@ -272,6 +282,18 @@ def setup(bot):
         user_id_str = str(member.id)
         create_or_update_user(user_id_str, str(member), boj_handle)
         add_user_role(user_id_str, role_name)
+
+        # 봇 알림 채널에 알림 전송
+        from common.utils import send_bot_notification
+        await send_bot_notification(
+            ctx.guild,
+            "👤 역할 부여 (관리자)",
+            f"**사용자:** {member.mention} ({member.display_name})\n"
+            f"**역할:** {role_name}\n"
+            f"**BOJ 핸들:** {boj_handle}\n"
+            f"**부여자:** {ctx.author.mention}",
+            discord.Color.blue()
+        )
 
         await ctx.send(
             f"✅ `{member}` 사용자에게 '{role_name}' 역할을 부여하고, "
@@ -702,6 +724,17 @@ class RoleRegisterModal(discord.ui.Modal, title="역할 및 BOJ 핸들 등록"):
             data['users'][user_id]['boj_handle'] = boj_handle
             
             save_data(data)
+            
+            # 봇 알림 채널에 알림 전송
+            from common.utils import send_bot_notification
+            await send_bot_notification(
+                interaction.guild,
+                "👤 역할 가입",
+                f"**사용자:** {interaction.user.mention} ({interaction.user.display_name})\n"
+                f"**역할:** {role_name}\n"
+                f"**BOJ 핸들:** {boj_handle}",
+                discord.Color.green()
+            )
             
             message = f"✅ '{role_name}' 역할이 부여되었습니다!\n📝 BOJ 핸들 '{boj_handle}'가 등록되었습니다."
             

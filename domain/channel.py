@@ -15,6 +15,9 @@ from common.database import (
 )
 from common.boj_utils import get_weekly_solved_count, get_weekly_solved_from_boj_status
 from discord.ext import tasks
+from common.logger import get_logger
+
+logger = get_logger()
 
 def find_role_by_group_name(group_name: str, data: dict) -> str:
     """그룹 이름으로 역할 이름 찾기 (대소문자/공백 무시)"""
@@ -50,8 +53,8 @@ async def update_group_weekly_status(group_name: str, bot_instance):
     week_end = ensure_kst(week_end)
 
     now = get_kst_now()  # 한국 시간 사용
-    # 기간 밖이면 갱신하지 않음
-    if not (week_start <= now <= week_end):
+    # 기간 밖이면 갱신하지 않음 (단, 월요일 01시 정각은 마지막 크롤링 허용)
+    if not (week_start <= now <= week_end + timedelta(minutes=5)):
         return
 
     channel = bot_instance.get_channel(channel_id)
@@ -240,10 +243,32 @@ async def group_weekly_auto_update():
         week_start = ensure_kst(week_start)
         week_end = ensure_kst(week_end)
 
-        if week_start <= now <= week_end:
+        # 기간 내: 정상 크롤링
+        if week_start <= now < week_end:
             await update_group_weekly_status(info['group_name'], _bot_for_group_weekly)
-        elif now > week_end:
-            # 기간이 지난 그룹은 DB에서 정리 (메시지는 그대로 둠)
+        # 월요일 01시 정각: 마지막 크롤링 후 DB 삭제
+        elif now >= week_end and now < week_end + timedelta(minutes=5):
+            # 마지막 크롤링 수행
+            logger.info(f"[그룹 주간 현황] {info['group_name']} - 마지막 크롤링 수행 (월요일 01시)")
+            await update_group_weekly_status(info['group_name'], _bot_for_group_weekly)
+            # 크롤링 후 DB에서 정리 (메시지는 그대로 둠)
+            delete_group_weekly_status(info['group_name'])
+            logger.info(f"[그룹 주간 현황] {info['group_name']} - DB에서 삭제됨")
+            
+            # 봇 알림 채널에 알림 전송
+            from common.utils import send_bot_notification
+            if _bot_for_group_weekly and _bot_for_group_weekly.guilds:
+                guild = _bot_for_group_weekly.guilds[0]
+                await send_bot_notification(
+                    guild,
+                    "📊 문제풀이 현황 종료",
+                    f"**그룹:** {info['group_name']}\n"
+                    f"**기간:** {week_start.strftime('%Y-%m-%d %H:%M')} ~ {week_end.strftime('%Y-%m-%d %H:%M')}\n"
+                    f"**상태:** 주간 현황이 종료되었고 DB에서 삭제되었습니다.",
+                    discord.Color.orange()
+                )
+        # 기간이 지난 경우: DB만 삭제 (이미 삭제되었을 수 있음)
+        elif now > week_end + timedelta(minutes=5):
             delete_group_weekly_status(info['group_name'])
 
 
@@ -410,6 +435,19 @@ def setup(bot):
                 data['studies'][role_name]['group_name'] = group_name
             
             save_data(data)
+            
+            # 봇 알림 채널에 알림 전송
+            from common.utils import send_bot_notification
+            await send_bot_notification(
+                ctx.guild,
+                "✅ 그룹 생성",
+                f"**그룹명:** {group_name}\n"
+                f"**역할:** {role_name}\n"
+                f"**생성자:** {ctx.author.mention}\n"
+                f"**생성된 채널:** {len(created_channels)}개",
+                discord.Color.green()
+            )
+            
             await ctx.send(embed=embed)
             
         except discord.Forbidden:
@@ -501,6 +539,19 @@ def setup(bot):
 
         # 즉시 1회 갱신
         await update_link_submission_status(group_name, ctx.bot)
+        
+        # 봇 알림 채널에 알림 전송
+        from common.utils import send_bot_notification
+        await send_bot_notification(
+            ctx.guild,
+            "📝 링크 제출 현황 생성",
+            f"**그룹:** {group_name}\n"
+            f"**채널:** {target_channel.mention}\n"
+            f"**기간:** {week_start.strftime('%Y-%m-%d')} ~ {week_end.strftime('%Y-%m-%d %H:%M')}\n"
+            f"**생성자:** {ctx.author.mention}",
+            discord.Color.green()
+        )
+        
         await ctx.send(
             f"✅ '{group_name}' 그룹의 주간 링크 제출 메시지가 {target_channel.mention}에 설정되었습니다.\n"
             f"📅 매시 정각 자동 갱신, 버튼으로 수동 갱신 및 제출 가능합니다."
@@ -566,6 +617,19 @@ def setup(bot):
 
         # 즉시 1회 갱신
         await update_group_weekly_status(group_name, ctx.bot)
+        
+        # 봇 알림 채널에 알림 전송
+        from common.utils import send_bot_notification
+        await send_bot_notification(
+            ctx.guild,
+            "📊 문제풀이 현황 생성",
+            f"**그룹:** {group_name}\n"
+            f"**채널:** {target_channel.mention}\n"
+            f"**기간:** {week_start.strftime('%Y-%m-%d %H:%M')} ~ {week_end.strftime('%Y-%m-%d %H:%M')}\n"
+            f"**생성자:** {ctx.author.mention}",
+            discord.Color.green()
+        )
+        
         await ctx.send(
             f"✅ '{group_name}' 그룹의 주간 문제풀이 현황 메시지가 {target_channel.mention}에 설정되었습니다.\n"
             f"📅 매시 정각 자동 갱신, 버튼으로 수동 갱신 가능합니다."
@@ -1912,6 +1976,19 @@ def setup(bot):
             del data['studies'][self.role_name]
             save_data(data)
             
+            # 봇 알림 채널에 알림 전송
+            from common.utils import send_bot_notification
+            await send_bot_notification(
+                interaction.guild,
+                "🗑️ 그룹 삭제",
+                f"**그룹명:** {self.group_name}\n"
+                f"**역할:** {self.role_name}\n"
+                f"**삭제된 과제:** {self.assignment_count}개\n"
+                f"**삭제자:** {interaction.user.mention}\n"
+                f"**참고:** 카테고리와 채널은 수동으로 삭제해야 합니다.",
+                discord.Color.red()
+            )
+            
             await interaction.response.edit_message(
                 content=f"✅ 그룹 '{self.group_name}'의 데이터가 삭제되었습니다.\n"
                        f"📊 삭제된 과제: {self.assignment_count}개\n"
@@ -2002,6 +2079,20 @@ def setup(bot):
             # 데이터에서 그룹 삭제
             del data['studies'][self.role_name]
             save_data(data)
+            
+            # 봇 알림 채널에 알림 전송
+            from common.utils import send_bot_notification
+            await send_bot_notification(
+                interaction.guild,
+                "🗑️ 그룹 전체 삭제",
+                f"**그룹명:** {self.group_name}\n"
+                f"**역할:** {self.role_name}\n"
+                f"**삭제된 과제:** {self.assignment_count}개\n"
+                f"**삭제된 채널:** {deleted_channels}개\n"
+                f"**카테고리 삭제:** {'✅ 완료' if deleted_category else '⚠️ 실패'}\n"
+                f"**삭제자:** {interaction.user.mention}",
+                discord.Color.red()
+            )
             
             result_message = f"✅ 그룹 '{self.group_name}' 전체 삭제 완료\n"
             result_message += f"📊 삭제된 과제: {self.assignment_count}개\n"
