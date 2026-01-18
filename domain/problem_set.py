@@ -271,7 +271,7 @@ class ProblemSetStatusView(discord.ui.View):
     
     @discord.ui.button(
         label="갱신", emoji="🔄", style=discord.ButtonStyle.secondary,
-        custom_id=None  # 동적 custom_id 사용 불가, 메시지에서 정보 추출
+        custom_id="problem_set_status_refresh"  # 고정된 custom_id 사용
     )
     async def refresh_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         # 메시지 기준으로 문제집 과제 찾기 (모든 문제집 과제를 확인하여 해당 메시지 찾기)
@@ -321,9 +321,10 @@ class ProblemSetStatusView(discord.ui.View):
 def register_problem_set_views(bot):
     """봇 재시작 후에도 문제집 과제 버튼이 작동하도록 persistent view 등록"""
     try:
-        # 문제집 과제 상태는 동적으로 생성되므로, 기본 View만 등록
-        # 실제 custom_id는 ProblemSetStatusView에서 동적으로 생성됨
-        print(f"[OK] 문제집 과제 persistent view 등록 완료")
+        # ProblemSetStatusView 등록 (custom_id는 고정되어 있음)
+        # 실제 그룹명과 문제집명은 메시지 ID로 찾음
+        bot.add_view(ProblemSetStatusView("", ""))  # 빈 값으로 초기화, 실제 값은 메시지에서 찾음
+        print(f"[OK] 문제집 과제 persistent view 등록 완료 (custom_id: problem_set_status_refresh)")
     except Exception as e:
         print(f"[ERROR] 문제집 과제 persistent view 등록 실패: {e}")
 
@@ -792,8 +793,16 @@ def setup(bot):
         
         await ctx.send(embed=embed)
     
-    # 자동 갱신 태스크 시작
-    problem_set_auto_update.start()
+    # 자동 갱신 태스크는 on_ready에서 시작 (봇이 준비된 후)
+
+
+def start_problem_set_scheduler(bot_instance):
+    """문제집 과제 자동 갱신 스케줄러 시작"""
+    global _bot_for_problem_set
+    _bot_for_problem_set = bot_instance
+    if not problem_set_auto_update.is_running():
+        problem_set_auto_update.start()
+        logger.info("문제집 과제 자동 갱신 스케줄러 시작")
 
 
 class ProblemSetCreateModal(discord.ui.Modal, title="문제집 생성"):

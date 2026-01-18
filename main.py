@@ -62,10 +62,12 @@ async def on_ready():
     from domain.role import start_weekly_status_scheduler
     from domain.channel import start_group_weekly_scheduler
     from domain.link_submission import start_link_submission_scheduler
+    from domain.problem_set import start_problem_set_scheduler
 
     start_weekly_status_scheduler(bot)
     start_group_weekly_scheduler(bot)
     start_link_submission_scheduler(bot)
+    start_problem_set_scheduler(bot)
 
 @bot.event
 async def on_command_error(ctx, error):
