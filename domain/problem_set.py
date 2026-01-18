@@ -152,7 +152,20 @@ def setup(bot):
         for i, result in enumerate(results[:20]):  # 최대 20명만 표시
             emoji = "🥇" if i == 0 else "🥈" if i == 1 else "🥉" if i == 2 else "•"
             boj_info = f" ({result['boj_handle']})" if result['boj_handle'] else ""
-            status_text += f"{emoji} {result['username']}{boj_info} - {result['status']} [{result['solved_count']}/{result['total']}]\n"
+            
+            # 안 푼 문제 번호 표시 (최대 5개)
+            unsolved_info = ""
+            if result['solved_count'] < result['total']:
+                unsolved_problems = result.get('unsolved_problems', [])
+                if unsolved_problems:
+                    display_count = min(5, len(unsolved_problems))
+                    unsolved_display = unsolved_problems[:display_count]
+                    unsolved_info = f" [{','.join(map(str, unsolved_display))}"
+                    if len(unsolved_problems) > 5:
+                        unsolved_info += "..."
+                    unsolved_info += "]"
+            
+            status_text += f"{emoji} {result['username']}{boj_info} - {result['status']} [{result['solved_count']}/{result['total']}]{unsolved_info}\n"
         
         if len(results) > 20:
             status_text += f"\n... 외 {len(results) - 20}명"
