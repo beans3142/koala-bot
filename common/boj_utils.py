@@ -5,6 +5,7 @@ import aiohttp
 from bs4 import BeautifulSoup
 import re
 import os
+import asyncio
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta, timezone
 
@@ -158,39 +159,66 @@ async def get_user_solved_problems(baekjoon_id: str, start_date: datetime = None
         print(f"해결한 문제 목록 가져오기 오류: {e}")
         return []
 
-async def get_user_solved_problems_from_solved_ac(baekjoon_id: str) -> List[int]:
+async def get_user_solved_problems_from_solved_ac(baekjoon_id: str, target_problems: List[int] = None) -> List[int]:
     """
     solved.ac에서 사용자가 해결한 문제 목록 가져오기
-    https://solved.ac/profile/{handle}/solved 페이지 크롤링
     
     Args:
         baekjoon_id: 백준 아이디
+        target_problems: 확인할 문제 번호 리스트 (None이면 전체 가져오기)
+                        이 리스트가 제공되면 문제 검색 API를 사용하여 효율적으로 확인
     
     Returns:
         해결한 문제 번호 리스트
     """
     try:
-        url = f"https://solved.ac/profile/{baekjoon_id}/solved"
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
         }
         
+        # target_problems가 제공되면 문제 검색 API 사용 (더 효율적)
+        # 예: https://solved.ac/problems?query=s%40beans3142+1000%7C1001%7C1002
+        if target_problems and len(target_problems) <= 50:  # URL 길이 제한 고려
+            return await _check_problems_via_search_api(baekjoon_id, target_problems, headers)
+        
+        # 전체 목록이 필요하거나 문제가 많으면 페이지 크롤링 사용
+        return await _get_all_solved_problems_via_pages(baekjoon_id, target_problems, headers)
+                
+    except Exception as e:
+        logger.error(f"[solved.ac 크롤링] 오류: {e}", exc_info=True)
+        return []
+
+
+async def _check_problems_via_search_api(baekjoon_id: str, target_problems: List[int], headers: dict) -> List[int]:
+    """
+    solved.ac 문제 검색 API를 사용하여 여러 문제를 한 번에 확인
+    https://solved.ac/problems?query=s@{handle}+{problem_ids}
+    
+    문제 번호는 |로 구분하여 전달 (예: 1000|1001|1002)
+    """
+    try:
+        import urllib.parse
+        
+        # 문제 번호를 |로 구분하여 쿼리 생성
+        problem_ids_str = '|'.join(map(str, target_problems))
+        query = f"s@{baekjoon_id}+{problem_ids_str}"
+        encoded_query = urllib.parse.quote(query)
+        
+        url = f"https://solved.ac/problems?query={encoded_query}&page=1"
+        
         async with aiohttp.ClientSession(headers=headers) as session:
             async with session.get(url) as response:
                 if response.status != 200:
-                    logger.warning(f"[solved.ac 크롤링] HTTP {response.status} 에러: {url}")
+                    logger.warning(f"[solved.ac 검색 API] HTTP {response.status} 에러: {url}")
                     return []
                 
                 html = await response.text()
                 soup = BeautifulSoup(html, 'html.parser')
                 
-                # 문제 번호 추출 (테이블에서)
+                # 해결한 문제 번호 추출
                 solved_problems = []
-                
-                # 테이블에서 문제 번호 링크 찾기
-                # 예: <a href="/problem/1000">1000</a>
                 problem_links = soup.find_all('a', href=re.compile(r'/problem/\d+'))
                 
                 for link in problem_links:
@@ -198,17 +226,113 @@ async def get_user_solved_problems_from_solved_ac(baekjoon_id: str) -> List[int]
                     match = re.search(r'/problem/(\d+)', href)
                     if match:
                         problem_id = int(match.group(1))
-                        solved_problems.append(problem_id)
+                        if problem_id in target_problems:
+                            solved_problems.append(problem_id)
                 
-                # 중복 제거 및 정렬
-                solved_problems = sorted(list(set(solved_problems)))
-                
-                logger.info(f"[solved.ac 크롤링] {baekjoon_id} - 해결한 문제 {len(solved_problems)}개 발견")
-                return solved_problems
+                logger.info(f"[solved.ac 검색 API] {baekjoon_id} - 목표 문제 중 {len(solved_problems)}/{len(target_problems)}개 해결")
+                return sorted(list(set(solved_problems)))
                 
     except Exception as e:
-        logger.error(f"[solved.ac 크롤링] 오류: {e}", exc_info=True)
+        logger.error(f"[solved.ac 검색 API] 오류: {e}", exc_info=True)
         return []
+
+
+async def _get_all_solved_problems_via_pages(baekjoon_id: str, target_problems: List[int] = None, headers: dict = None) -> List[int]:
+    """
+    solved.ac profile 페이지를 크롤링하여 전체 해결한 문제 목록 가져오기
+    """
+    if headers is None:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+        }
+    
+    solved_problems = []
+    page = 1
+    max_pages = 100  # 최대 100페이지 (약 5000개 문제)
+    target_set = set(target_problems) if target_problems else None
+    last_page = None  # 마지막 페이지 번호
+    
+    async with aiohttp.ClientSession(headers=headers) as session:
+        while page <= max_pages:
+            url = f"https://solved.ac/profile/{baekjoon_id}/solved"
+            if page > 1:
+                url += f"?page={page}"
+            
+            async with session.get(url) as response:
+                if response.status != 200:
+                    if page == 1:
+                        logger.warning(f"[solved.ac 크롤링] HTTP {response.status} 에러: {url}")
+                        return []
+                    # 첫 페이지가 아니면 더 이상 페이지가 없는 것으로 간주
+                    break
+                
+                html = await response.text()
+                soup = BeautifulSoup(html, 'html.parser')
+                
+                # 첫 페이지에서 마지막 페이지 번호 파싱
+                if page == 1 and last_page is None:
+                    # 페이지네이션 버튼에서 마지막 페이지 번호 찾기
+                    # 예: <a role="button" href="/profile/beans3142/solved?page=42" class="css-13gyek6">42</a>
+                    pagination_links = soup.find_all('a', href=re.compile(r'/profile/[^/]+/solved\?page=\d+'))
+                    page_numbers = []
+                    for link in pagination_links:
+                        href = link.get('href', '')
+                        match = re.search(r'page=(\d+)', href)
+                        if match:
+                            page_num = int(match.group(1))
+                            page_numbers.append(page_num)
+                    
+                    if page_numbers:
+                        last_page = max(page_numbers)
+                        logger.info(f"[solved.ac 크롤링] {baekjoon_id} - 총 {last_page}페이지 발견")
+                        # max_pages를 last_page로 제한
+                        max_pages = min(max_pages, last_page)
+                
+                # 문제 번호 추출 (테이블에서)
+                page_problems = []
+                problem_links = soup.find_all('a', href=re.compile(r'/problem/\d+'))
+                
+                for link in problem_links:
+                    href = link.get('href', '')
+                    match = re.search(r'/problem/(\d+)', href)
+                    if match:
+                        problem_id = int(match.group(1))
+                        page_problems.append(problem_id)
+                
+                if not page_problems:
+                    # 페이지에 문제가 없으면 더 이상 페이지가 없는 것으로 간주
+                    break
+                
+                solved_problems.extend(page_problems)
+                
+                # target_problems가 제공되고, 모든 문제를 찾았으면 조기 종료
+                if target_set:
+                    found_problems = set(solved_problems) & target_set
+                    if len(found_problems) == len(target_set):
+                        logger.info(f"[solved.ac 크롤링] {baekjoon_id} - 목표 문제 {len(target_set)}개를 모두 찾아 조기 종료 (페이지 {page}/{last_page or '?'})")
+                        # 목표 문제만 반환
+                        return sorted(list(found_problems))
+                
+                # 마지막 페이지에 도달했으면 종료
+                if last_page and page >= last_page:
+                    break
+                
+                page += 1
+                await asyncio.sleep(0.3)  # Rate limiting 방지
+    
+    # 중복 제거 및 정렬
+    solved_problems = sorted(list(set(solved_problems)))
+    
+    # target_problems가 제공되었으면 해당 문제만 필터링하여 반환
+    if target_set:
+        solved_problems = sorted(list(set(solved_problems) & target_set))
+        logger.info(f"[solved.ac 크롤링] {baekjoon_id} - 목표 문제 중 {len(solved_problems)}/{len(target_set)}개 해결 (페이지 {page-1}개 크롤링)")
+    else:
+        logger.info(f"[solved.ac 크롤링] {baekjoon_id} - 해결한 문제 {len(solved_problems)}개 발견 (페이지 {page-1}개 크롤링)")
+    
+    return solved_problems
 
 async def verify_user_exists(baekjoon_id: str) -> bool:
     """

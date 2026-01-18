@@ -107,7 +107,8 @@ def setup(bot):
             
             try:
                 # solved.ac에서 해결한 문제 목록 가져오기
-                solved_problems = await get_user_solved_problems_from_solved_ac(boj_handle)
+                # 최적화: 문제집 문제 목록을 전달하여 효율적으로 확인
+                solved_problems = await get_user_solved_problems_from_solved_ac(boj_handle, target_problems=problem_ids)
                 solved_set = set(solved_problems)
                 
                 # 문제집 문제 중 해결한 문제 수
@@ -324,7 +325,8 @@ def setup(bot):
             
             try:
                 # solved.ac에서 해결한 문제 목록 가져오기
-                solved_problems = await get_user_solved_problems_from_solved_ac(boj_handle)
+                # 최적화: 모의테스트 문제 목록을 전달하여 효율적으로 확인
+                solved_problems = await get_user_solved_problems_from_solved_ac(boj_handle, target_problems=problem_ids)
                 solved_set = set(solved_problems)
                 
                 # 모의테스트 문제 중 해결한 문제 수
