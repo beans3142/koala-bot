@@ -271,11 +271,20 @@ class ProblemSetStatusView(discord.ui.View):
     
     @discord.ui.button(
         label="갱신", emoji="🔄", style=discord.ButtonStyle.secondary,
-        custom_id="problem_set_status_refresh"
+        custom_id=None  # 동적 custom_id 사용 불가, 메시지에서 정보 추출
     )
     async def refresh_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # 메시지 기준으로 문제집 과제 찾기
-        info = get_group_problem_set_status(self.group_name, self.problem_set_name)
+        # 메시지 기준으로 문제집 과제 찾기 (모든 문제집 과제를 확인하여 해당 메시지 찾기)
+        all_statuses = get_all_group_problem_set_status()
+        info = None
+        for status in all_statuses:
+            if str(status['channel_id']) == str(interaction.channel.id) and str(status['message_id']) == str(interaction.message.id):
+                info = status
+                break
+        
+        if not info:
+            # fallback: self에 저장된 정보 사용
+            info = get_group_problem_set_status(self.group_name, self.problem_set_name)
         if not info:
             if interaction.response.is_done():
                 await interaction.followup.send("❌ 이 메시지는 문제집 과제로 등록되어 있지 않습니다.", ephemeral=True)
@@ -301,7 +310,11 @@ class ProblemSetStatusView(discord.ui.View):
         
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=True)
-        await update_problem_set_status(self.group_name, self.problem_set_name, interaction.client)
+        
+        # info에서 그룹명과 문제집명 가져오기
+        group_name = info['group_name']
+        problem_set_name = info['problem_set_name']
+        await update_problem_set_status(group_name, problem_set_name, interaction.client)
         await interaction.followup.send("✅ 문제집 과제 현황이 갱신되었습니다.", ephemeral=True)
 
 
