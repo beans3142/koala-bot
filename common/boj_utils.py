@@ -203,8 +203,9 @@ async def _check_problems_via_search_api(baekjoon_id: str, target_problems: List
         import urllib.parse
         
         # 문제 번호를 |로 구분하여 쿼리 생성
+        # 형식: s@[id] 1000|2557|8393... (공백 사용)
         problem_ids_str = '|'.join(map(str, target_problems))
-        query = f"s@{baekjoon_id}+{problem_ids_str}"
+        query = f"s@{baekjoon_id} {problem_ids_str}"  # 공백 사용 (+ 대신)
         encoded_query = urllib.parse.quote(query)
         
         url = f"https://solved.ac/problems?query={encoded_query}&page=1"
@@ -225,15 +226,16 @@ async def _check_problems_via_search_api(baekjoon_id: str, target_problems: List
                 
                 # 테이블에서 문제 번호 찾기
                 # 방법 1: 링크의 href 속성에서 추출 (가장 확실한 방법)
-                # href에 /problem/ 숫자가 포함된 모든 링크 찾기
-                problem_links = soup.find_all('a', href=re.compile(r'/problem/\d+'))
+                # href에 acmicpc.net/problem/ 또는 /problem/ 숫자가 포함된 모든 링크 찾기
+                # 예: href="https://www.acmicpc.net/problem/2739" 또는 href="/problem/2739"
+                problem_links = soup.find_all('a', href=re.compile(r'(?:acmicpc\.net/problem/|/problem/)\d+'))
                 found_ids_from_links = set()
                 
                 for link in problem_links:
                     href = link.get('href', '')
                     # 전체 URL 또는 상대 경로에서 문제 번호 추출
-                    # 예: /problem/1330, https://www.acmicpc.net/problem/1330 모두 매칭
-                    match = re.search(r'/problem/(\d+)', href)
+                    # 예: https://www.acmicpc.net/problem/2739, /problem/1330 모두 매칭
+                    match = re.search(r'(?:acmicpc\.net/problem/|/problem/)(\d+)', href)
                     if match:
                         problem_id = int(match.group(1))
                         found_ids_from_links.add(problem_id)
