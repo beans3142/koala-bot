@@ -202,6 +202,7 @@ async def _check_problems_via_search_api(baekjoon_id: str, target_problems: List
         import urllib.parse
         
         # 사용자가 푼 모든 문제 검색 (문제 번호 필터 없이)
+        # 형식: s@{baekjoon_id} -> URL 인코딩: s%40beans3142
         query = f"s@{baekjoon_id}"
         encoded_query = urllib.parse.quote(query)
         
@@ -211,9 +212,12 @@ async def _check_problems_via_search_api(baekjoon_id: str, target_problems: List
         max_pages = 100  # 최대 100페이지
         last_page = None  # 마지막 페이지 번호
         
+        logger.debug(f"[solved.ac 검색 API] {baekjoon_id} - 쿼리: {query} -> 인코딩: {encoded_query}")
+        
         async with aiohttp.ClientSession(headers=headers) as session:
             while page <= max_pages:
                 url = f"https://solved.ac/problems?query={encoded_query}&page={page}"
+                logger.debug(f"[solved.ac 검색 API] {baekjoon_id} - 페이지 {page} 크롤링: {url}")
                 
                 async with session.get(url) as response:
                     if response.status != 200:
@@ -259,12 +263,23 @@ async def _check_problems_via_search_api(baekjoon_id: str, target_problems: List
                     
                     if not page_problems:
                         # 페이지에 문제가 없으면 더 이상 페이지가 없는 것으로 간주
+                        if page == 1:
+                            logger.warning(f"[solved.ac 검색 API] {baekjoon_id} - 첫 페이지에 문제가 없음 (사용자가 문제를 풀지 않았거나 크롤링 실패)")
+                            # "해당하는 문제가 없습니다" 메시지 확인
+                            no_problems_text = soup.find(string=re.compile(r'해당하는 문제가 없습니다|문제가 없습니다'))
+                            if no_problems_text:
+                                logger.info(f"[solved.ac 검색 API] {baekjoon_id} - 사용자가 푼 문제가 없음")
                         break
                     
                     # target_problems에 있는 문제만 필터링
+                    found_in_page = []
                     for problem_id in page_problems:
                         if problem_id in target_set:
                             solved_problems.append(problem_id)
+                            found_in_page.append(problem_id)
+                    
+                    if found_in_page:
+                        logger.debug(f"[solved.ac 검색 API] {baekjoon_id} - 페이지 {page}에서 {len(found_in_page)}개 문제 발견: {found_in_page[:5]}")
                     
                     # 모든 목표 문제를 찾았으면 조기 종료
                     found_set = set(solved_problems)
@@ -278,12 +293,12 @@ async def _check_problems_via_search_api(baekjoon_id: str, target_problems: List
                     
                     page += 1
                     await asyncio.sleep(0.3)  # Rate limiting 방지
-                
-                # 중복 제거 및 정렬
-                solved_problems = sorted(list(set(solved_problems)))
-                
-                logger.info(f"[solved.ac 검색 API] {baekjoon_id} - 목표 문제 중 {len(solved_problems)}/{len(target_problems)}개 해결 (페이지 {page-1}개 크롤링)")
-                return solved_problems
+        
+        # 중복 제거 및 정렬
+        solved_problems = sorted(list(set(solved_problems)))
+        
+        logger.info(f"[solved.ac 검색 API] {baekjoon_id} - 목표 문제 중 {len(solved_problems)}/{len(target_problems)}개 해결 (페이지 {page-1}개 크롤링)")
+        return solved_problems
                 
     except Exception as e:
         logger.error(f"[solved.ac 검색 API] 오류: {e}", exc_info=True)
