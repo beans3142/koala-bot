@@ -197,6 +197,7 @@ async def _check_problems_via_search_api(baekjoon_id: str, target_problems: List
     https://solved.ac/problems?query=s@{handle}+{problem_ids}
     
     문제 번호는 |로 구분하여 전달 (예: 1000|1001|1002)
+    검색 결과에서 정확히 target_problems에 있는 문제만 필터링하여 반환
     """
     try:
         import urllib.parse
@@ -217,8 +218,12 @@ async def _check_problems_via_search_api(baekjoon_id: str, target_problems: List
                 html = await response.text()
                 soup = BeautifulSoup(html, 'html.parser')
                 
-                # 해결한 문제 번호 추출
+                # 해결한 문제 번호 추출 (정확히 target_problems에 있는 것만)
+                target_set = set(target_problems)
                 solved_problems = []
+                all_found_problems = []  # 디버깅용: 검색 결과의 모든 문제
+                
+                # 테이블에서 문제 번호 링크 찾기
                 problem_links = soup.find_all('a', href=re.compile(r'/problem/\d+'))
                 
                 for link in problem_links:
@@ -226,11 +231,22 @@ async def _check_problems_via_search_api(baekjoon_id: str, target_problems: List
                     match = re.search(r'/problem/(\d+)', href)
                     if match:
                         problem_id = int(match.group(1))
-                        if problem_id in target_problems:
+                        all_found_problems.append(problem_id)
+                        # 정확히 target_problems에 있는 문제만 추가
+                        if problem_id in target_set:
                             solved_problems.append(problem_id)
                 
-                logger.info(f"[solved.ac 검색 API] {baekjoon_id} - 목표 문제 중 {len(solved_problems)}/{len(target_problems)}개 해결")
-                return sorted(list(set(solved_problems)))
+                # 중복 제거 및 정렬
+                solved_problems = sorted(list(set(solved_problems)))
+                all_found_problems = sorted(list(set(all_found_problems)))
+                
+                # 디버깅: 검색 결과에 다른 문제가 포함되었는지 확인
+                unexpected = [pid for pid in all_found_problems if pid not in target_set]
+                if unexpected:
+                    logger.debug(f"[solved.ac 검색 API] 검색 결과에 예상치 못한 문제 발견: {unexpected[:10]} (필터링됨)")
+                
+                logger.info(f"[solved.ac 검색 API] {baekjoon_id} - 목표 문제 중 {len(solved_problems)}/{len(target_problems)}개 해결 (검색 결과: {len(all_found_problems)}개, 필터링 후: {len(solved_problems)}개)")
+                return solved_problems
                 
     except Exception as e:
         logger.error(f"[solved.ac 검색 API] 오류: {e}", exc_info=True)
