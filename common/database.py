@@ -122,6 +122,19 @@ def init_database():
             week_end TEXT,
             last_updated TEXT
         )
+        
+        # 문제집 과제 상태 테이블
+        CREATE TABLE IF NOT EXISTS group_problem_set_status (
+            group_name TEXT,
+            problem_set_name TEXT,
+            role_name TEXT,
+            channel_id TEXT,
+            message_id TEXT,
+            week_start TEXT,
+            week_end TEXT,
+            last_updated TEXT,
+            PRIMARY KEY (group_name, problem_set_name)
+        )
     ''')
     
     # 그룹 주간 링크 제출 메시지 테이블
@@ -675,6 +688,60 @@ def delete_group_weekly_status(group_name: str):
     cursor = conn.cursor()
     
     cursor.execute('DELETE FROM group_weekly_status WHERE group_name = ?', (group_name,))
+    conn.commit()
+    conn.close()
+
+# ==================== 문제집 과제 상태 관리 ====================
+
+def save_group_problem_set_status(group_name: str, problem_set_name: str, role_name: str,
+                                  channel_id: str, message_id: str, week_start: str, week_end: str,
+                                  last_updated: Optional[str] = None):
+    """문제집 과제 상태 메시지 저장"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    now = last_updated or datetime.now().isoformat()
+    cursor.execute('''
+        INSERT OR REPLACE INTO group_problem_set_status
+        (group_name, problem_set_name, role_name, channel_id, message_id, week_start, week_end, last_updated)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (group_name, problem_set_name, role_name, channel_id, message_id, week_start, week_end, now))
+    
+    conn.commit()
+    conn.close()
+
+def get_group_problem_set_status(group_name: str, problem_set_name: str) -> Optional[Dict]:
+    """문제집 과제 상태 메시지 가져오기"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM group_problem_set_status WHERE group_name = ? AND problem_set_name = ?',
+                   (group_name, problem_set_name))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if row:
+        return dict(row)
+    return None
+
+def get_all_group_problem_set_status() -> List[Dict]:
+    """모든 문제집 과제 상태 메시지 목록 가져오기"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM group_problem_set_status')
+    rows = cursor.fetchall()
+    conn.close()
+    
+    return [dict(row) for row in rows]
+
+def delete_group_problem_set_status(group_name: str, problem_set_name: str):
+    """문제집 과제 상태 메시지 삭제"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('DELETE FROM group_problem_set_status WHERE group_name = ? AND problem_set_name = ?',
+                   (group_name, problem_set_name))
     conn.commit()
     conn.close()
 

@@ -250,15 +250,18 @@ async def _check_problems_via_search_api(baekjoon_id: str, target_problems: List
                             max_pages = min(max_pages, last_page)
                     
                     # 페이지에서 문제 번호 추출
+                    # https://www.acmicpc.net/problem/XXXX 형식의 모든 링크 찾기
                     page_problems = []
-                    problem_links = soup.find_all('a', href=re.compile(r'(?:acmicpc\.net/problem/|/problem/)\d+'))
+                    problem_links = soup.find_all('a', href=re.compile(r'(?:www\.)?acmicpc\.net/problem/\d+|/problem/\d+'))
                     
                     for link in problem_links:
                         href = link.get('href', '')
                         # 전체 URL 또는 상대 경로에서 문제 번호 추출
-                        match = re.search(r'(?:acmicpc\.net/problem/|/problem/)(\d+)', href)
+                        # 예: https://www.acmicpc.net/problem/1000 또는 /problem/1000
+                        match = re.search(r'(?:www\.)?acmicpc\.net/problem/(\d+)|/problem/(\d+)', href)
                         if match:
-                            problem_id = int(match.group(1))
+                            # 두 그룹 중 하나는 None이므로 or로 처리
+                            problem_id = int(match.group(1) or match.group(2))
                             page_problems.append(problem_id)
                     
                     if not page_problems:
@@ -271,7 +274,7 @@ async def _check_problems_via_search_api(baekjoon_id: str, target_problems: List
                                 logger.info(f"[solved.ac 검색 API] {baekjoon_id} - 사용자가 푼 문제가 없음")
                         break
                     
-                    # target_problems에 있는 문제만 필터링
+                    # target_problems에 있는 문제만 필터링하여 추가
                     found_in_page = []
                     for problem_id in page_problems:
                         if problem_id in target_set:
@@ -279,7 +282,9 @@ async def _check_problems_via_search_api(baekjoon_id: str, target_problems: List
                             found_in_page.append(problem_id)
                     
                     if found_in_page:
-                        logger.debug(f"[solved.ac 검색 API] {baekjoon_id} - 페이지 {page}에서 {len(found_in_page)}개 문제 발견: {found_in_page[:5]}")
+                        logger.debug(f"[solved.ac 검색 API] {baekjoon_id} - 페이지 {page}에서 목표 문제 {len(found_in_page)}개 발견: {found_in_page[:5]}")
+                    else:
+                        logger.debug(f"[solved.ac 검색 API] {baekjoon_id} - 페이지 {page}에서 {len(page_problems)}개 문제 발견 (목표 문제 없음)")
                     
                     # 모든 목표 문제를 찾았으면 조기 종료
                     found_set = set(solved_problems)

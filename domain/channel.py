@@ -12,6 +12,10 @@ from common.database import (
     get_group_weekly_status_by_message,
     get_all_group_weekly_status,
     delete_group_weekly_status,
+    save_group_problem_set_status,
+    get_group_problem_set_status,
+    get_all_group_problem_set_status,
+    delete_group_problem_set_status,
 )
 from common.boj_utils import get_weekly_solved_count, get_weekly_solved_from_boj_status
 from discord.ext import tasks
@@ -635,6 +639,110 @@ def setup(bot):
             f"📅 매시 정각 자동 갱신, 버튼으로 수동 갱신 가능합니다."
         )
 
+    @group_assignment_create_group.command(name='문제집')
+    @commands.has_permissions(administrator=True)
+    async def group_assignment_create_problem_set(ctx, group_name: str, problem_set_name: str, channel: discord.TextChannel = None):
+        """그룹 문제집 과제 생성 (관리자 전용)
+        - 해당 채널에 고정 메시지 1개 생성
+        - 월요일 00시 ~ 다음 주 월요일 01시까지 정각 자동 갱신 + 수동 버튼 갱신
+        
+        사용법: /그룹 과제 생성 문제집 [그룹명] [문제집명] [채널링크(선택)]
+        예시: /그룹 과제 생성 문제집 21기-기초 21기-기초-1주차 #과제현황
+        """
+        from domain.problem_set import get_problem_set, update_problem_set_status
+        
+        # 채널이 지정되지 않았으면 현재 채널 사용
+        target_channel = channel if channel else ctx.channel
+        
+        # 문제집 확인
+        problem_set = get_problem_set(problem_set_name)
+        if not problem_set:
+            await ctx.send(f"❌ '{problem_set_name}' 문제집을 찾을 수 없습니다.\n💡 `/문제집 목록` 명령어로 등록된 문제집을 확인하세요.")
+            return
+        
+        data = load_data()
+        
+        # 그룹 이름으로 역할 찾기
+        role_name = find_role_by_group_name(group_name, data)
+        if not role_name:
+            await ctx.send(
+                f"❌ '{group_name}' 그룹을 찾을 수 없습니다.\n💡 `/그룹 목록` 명령어로 등록된 그룹을 확인하세요."
+            )
+            return
+        
+        # 역할 등록 여부 확인
+        if role_name not in data.get('role_tokens', {}):
+            await ctx.send(f"❌ '{group_name}' 그룹에 연결된 역할('{role_name}')이 등록되지 않았습니다.")
+            return
+        
+        # 이미 존재하는지 확인
+        existing = get_group_problem_set_status(group_name, problem_set_name)
+        if existing:
+            await ctx.send(f"❌ '{group_name}' 그룹의 '{problem_set_name}' 문제집 과제가 이미 존재합니다.")
+            return
+        
+        # 기준 주 계산 (명령어 실행일이 속한 주의 월요일 00시 ~ 다음 주 월요일 01시)
+        today = get_kst_now()
+        days_since_monday = today.weekday()  # 0=월요일
+        week_start = today - timedelta(days=days_since_monday)
+        week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_end = week_start + timedelta(days=7, hours=1)
+        
+        # 문제집 문제 수
+        problem_ids = problem_set['problem_ids']
+        total_problems = len(problem_ids)
+        
+        # 초기 임베드
+        embed = discord.Embed(
+            title=f"📚 '{problem_set_name}' 문제집 과제",
+            description=(
+                f"**그룹:** {group_name}\n"
+                f"**전체 문제 수:** {total_problems}개\n"
+                f"**기간:** {week_start.strftime('%Y-%m-%d')} ~ {week_end.strftime('%Y-%m-%d %H:%M')}\n"
+                f"**마지막 갱신:** -"
+            ),
+            color=discord.Color.blue(),
+        )
+        
+        # View 생성 (갱신 버튼 포함)
+        from domain.problem_set import ProblemSetStatusView
+        view = ProblemSetStatusView(group_name, problem_set_name)
+        
+        # 지정된 채널에 메시지 전송
+        msg = await target_channel.send(embed=embed, view=view)
+        
+        # DB에 저장
+        save_group_problem_set_status(
+            group_name,
+            problem_set_name,
+            role_name,
+            str(target_channel.id),
+            str(msg.id),
+            week_start.isoformat(),
+            week_end.isoformat(),
+        )
+        
+        # 즉시 1회 갱신
+        await update_problem_set_status(group_name, problem_set_name, ctx.bot)
+        
+        # 봇 알림 채널에 알림 전송
+        from common.utils import send_bot_notification
+        await send_bot_notification(
+            ctx.guild,
+            "📚 문제집 과제 생성",
+            f"**그룹:** {group_name}\n"
+            f"**문제집:** {problem_set_name}\n"
+            f"**채널:** {target_channel.mention}\n"
+            f"**기간:** {week_start.strftime('%Y-%m-%d')} ~ {week_end.strftime('%Y-%m-%d %H:%M')}\n"
+            f"**생성자:** {ctx.author.mention}",
+            discord.Color.green()
+        )
+        
+        await ctx.send(
+            f"✅ '{group_name}' 그룹의 '{problem_set_name}' 문제집 과제가 {target_channel.mention}에 설정되었습니다.\n"
+            f"📅 매시 정각 자동 갱신, 버튼으로 수동 갱신 가능합니다."
+        )
+
     @group_assignment_group.command(name='갱신')
     @commands.has_permissions(administrator=True)
     async def group_assignment_refresh(ctx, assignment_type: str, *, group_name: str):
@@ -664,16 +772,54 @@ def setup(bot):
 
     @group_assignment_group.command(name='삭제')
     @commands.has_permissions(administrator=True)
-    async def group_assignment_delete(ctx, assignment_type: str, *, group_name: str):
+    async def group_assignment_delete(ctx, assignment_type: str, *, args: str):
         """그룹 과제 삭제 (관리자 전용)
         
-        assignment_type: '링크제출' 또는 '문제풀이'
+        assignment_type: '링크제출', '문제풀이', 또는 '문제집'
+        - 문제집의 경우: '문제집 [그룹명] [문제집명]' 형식
         - DB에서 정보만 삭제 (메시지는 채널에 그대로 남음)
         """
-        if assignment_type not in ['링크제출', '문제풀이']:
-            await ctx.send("❌ 과제 유형은 '링크제출' 또는 '문제풀이'만 가능합니다.")
+        if assignment_type not in ['링크제출', '문제풀이', '문제집']:
+            await ctx.send("❌ 과제 유형은 '링크제출', '문제풀이', 또는 '문제집'만 가능합니다.")
             return
-
+        
+        # 문제집의 경우 args에서 그룹명과 문제집명 파싱
+        if assignment_type == '문제집':
+            parts = args.split(None, 1)  # 최대 2개로 분리
+            if len(parts) < 2:
+                await ctx.send("❌ 문제집 과제 삭제는 `/그룹 과제 삭제 문제집 [그룹명] [문제집명]` 형식으로 입력해주세요.")
+                return
+            group_name = parts[0]
+            problem_set_name = parts[1]
+            
+            info = get_group_problem_set_status(group_name, problem_set_name)
+            if not info:
+                await ctx.send(f"❌ '{group_name}' 그룹의 '{problem_set_name}' 문제집 과제를 찾을 수 없습니다.")
+                return
+            
+            delete_group_problem_set_status(group_name, problem_set_name)
+            channel = ctx.guild.get_channel(int(info['channel_id']))
+            channel_name = channel.mention if channel else f"<#{info['channel_id']}>"
+            
+            # 봇 알림 채널에 알림 전송
+            from common.utils import send_bot_notification
+            await send_bot_notification(
+                ctx.guild,
+                "🗑️ 문제집 과제 삭제",
+                f"**그룹:** {group_name}\n"
+                f"**문제집:** {problem_set_name}\n"
+                f"**삭제자:** {ctx.author.mention}",
+                discord.Color.red()
+            )
+            
+            await ctx.send(
+                f"✅ '{group_name}' 그룹의 '{problem_set_name}' 문제집 과제 정보가 삭제되었습니다.\n"
+                f"📝 메시지는 {channel_name}에 그대로 남아있습니다."
+            )
+            return
+        
+        # 링크제출, 문제풀이의 경우 기존 로직
+        group_name = args
         data = load_data()
         role_name = find_role_by_group_name(group_name, data)
         if not role_name:
