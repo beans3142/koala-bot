@@ -101,6 +101,7 @@ def setup(bot):
                     'boj_handle': None,
                     'solved_count': 0,
                     'total': total_problems,
+                    'unsolved_problems': problem_ids.copy(),  # BOJ 핸들이 없으면 모든 문제를 미해결로 표시
                     'status': '⚠️'
                 })
                 continue
@@ -114,11 +115,15 @@ def setup(bot):
                 # 문제집 문제 중 해결한 문제 수
                 solved_count = len([pid for pid in problem_ids if pid in solved_set])
                 
+                # 안 푼 문제 번호 찾기
+                unsolved_problems = [pid for pid in problem_ids if pid not in solved_set]
+                
                 results.append({
                     'username': username,
                     'boj_handle': boj_handle,
                     'solved_count': solved_count,
                     'total': total_problems,
+                    'unsolved_problems': unsolved_problems,
                     'status': '✅' if solved_count == total_problems else '📝'
                 })
             except Exception as e:
@@ -128,6 +133,7 @@ def setup(bot):
                     'boj_handle': boj_handle,
                     'solved_count': 0,
                     'total': total_problems,
+                    'unsolved_problems': problem_ids.copy(),  # 에러 시 모든 문제를 미해결로 표시
                     'status': '❌'
                 })
         
@@ -319,6 +325,7 @@ def setup(bot):
                     'boj_handle': None,
                     'solved_count': 0,
                     'total': total_problems,
+                    'unsolved_problems': problem_ids.copy(),  # BOJ 핸들이 없으면 모든 문제를 미해결로 표시
                     'status': '⚠️'
                 })
                 continue
@@ -332,11 +339,15 @@ def setup(bot):
                 # 모의테스트 문제 중 해결한 문제 수
                 solved_count = len([pid for pid in problem_ids if pid in solved_set])
                 
+                # 안 푼 문제 번호 찾기
+                unsolved_problems = [pid for pid in problem_ids if pid not in solved_set]
+                
                 results.append({
                     'username': username,
                     'boj_handle': boj_handle,
                     'solved_count': solved_count,
                     'total': total_problems,
+                    'unsolved_problems': unsolved_problems,
                     'status': '✅' if solved_count == total_problems else '📝'
                 })
             except Exception as e:
@@ -346,6 +357,7 @@ def setup(bot):
                     'boj_handle': boj_handle,
                     'solved_count': 0,
                     'total': total_problems,
+                    'unsolved_problems': problem_ids.copy(),  # 에러 시 모든 문제를 미해결로 표시
                     'status': '❌'
                 })
         
@@ -364,7 +376,20 @@ def setup(bot):
         for i, result in enumerate(results[:20]):  # 최대 20명만 표시
             emoji = "🥇" if i == 0 else "🥈" if i == 1 else "🥉" if i == 2 else "•"
             boj_info = f" ({result['boj_handle']})" if result['boj_handle'] else ""
-            status_text += f"{emoji} {result['username']}{boj_info} - {result['status']} [{result['solved_count']}/{result['total']}]\n"
+            
+            # 안 푼 문제 번호 표시 (최대 5개)
+            unsolved_info = ""
+            if result['solved_count'] < result['total']:
+                unsolved_problems = result.get('unsolved_problems', [])
+                if unsolved_problems:
+                    display_count = min(5, len(unsolved_problems))
+                    unsolved_display = unsolved_problems[:display_count]
+                    unsolved_info = f" [{','.join(map(str, unsolved_display))}"
+                    if len(unsolved_problems) > 5:
+                        unsolved_info += "..."
+                    unsolved_info += "]"
+            
+            status_text += f"{emoji} {result['username']}{boj_info} - {result['status']} [{result['solved_count']}/{result['total']}]{unsolved_info}\n"
         
         if len(results) > 20:
             status_text += f"\n... 외 {len(results) - 20}명"
