@@ -193,92 +193,96 @@ async def get_user_solved_problems_from_solved_ac(baekjoon_id: str, target_probl
 
 async def _check_problems_via_search_api(baekjoon_id: str, target_problems: List[int], headers: dict) -> List[int]:
     """
-    solved.ac 문제 검색 API를 사용하여 여러 문제를 한 번에 확인
-    https://solved.ac/problems?query=s@{handle}+{problem_ids}
+    solved.ac 문제 검색 API를 사용하여 사용자가 푼 모든 문제를 페이지네이션으로 확인
+    https://solved.ac/problems?query=s@{handle}&page=1
     
-    문제 번호는 |로 구분하여 전달 (예: 1000|1001|1002)
-    검색 결과에서 정확히 target_problems에 있는 문제만 필터링하여 반환
+    각 페이지에서 문제 번호를 추출하고, target_problems에 있는 문제만 필터링하여 반환
     """
     try:
         import urllib.parse
         
-        # 문제 번호를 |로 구분하여 쿼리 생성
-        # 형식: s@[id] 1000|2557|8393... (공백 사용)
-        problem_ids_str = '|'.join(map(str, target_problems))
-        query = f"s@{baekjoon_id} {problem_ids_str}"  # 공백 사용 (+ 대신)
+        # 사용자가 푼 모든 문제 검색 (문제 번호 필터 없이)
+        query = f"s@{baekjoon_id}"
         encoded_query = urllib.parse.quote(query)
         
-        url = f"https://solved.ac/problems?query={encoded_query}&page=1"
+        target_set = set(target_problems)
+        solved_problems = []
+        page = 1
+        max_pages = 100  # 최대 100페이지
+        last_page = None  # 마지막 페이지 번호
         
         async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.get(url) as response:
-                if response.status != 200:
-                    logger.warning(f"[solved.ac 검색 API] HTTP {response.status} 에러: {url}")
-                    return []
+            while page <= max_pages:
+                url = f"https://solved.ac/problems?query={encoded_query}&page={page}"
                 
-                html = await response.text()
-                soup = BeautifulSoup(html, 'html.parser')
-                
-                # 해결한 문제 번호 추출 (정확히 target_problems에 있는 것만)
-                target_set = set(target_problems)
-                solved_problems = []
-                all_found_problems = []  # 디버깅용: 검색 결과의 모든 문제
-                
-                # 테이블에서 문제 번호 찾기
-                # 방법 1: 링크의 href 속성에서 추출 (가장 확실한 방법)
-                # href에 acmicpc.net/problem/ 또는 /problem/ 숫자가 포함된 모든 링크 찾기
-                # 예: href="https://www.acmicpc.net/problem/2739" 또는 href="/problem/2739"
-                problem_links = soup.find_all('a', href=re.compile(r'(?:acmicpc\.net/problem/|/problem/)\d+'))
-                found_ids_from_links = set()
-                
-                for link in problem_links:
-                    href = link.get('href', '')
-                    # 전체 URL 또는 상대 경로에서 문제 번호 추출
-                    # 예: https://www.acmicpc.net/problem/2739, /problem/1330 모두 매칭
-                    match = re.search(r'(?:acmicpc\.net/problem/|/problem/)(\d+)', href)
-                    if match:
-                        problem_id = int(match.group(1))
-                        found_ids_from_links.add(problem_id)
-                        all_found_problems.append(problem_id)
+                async with session.get(url) as response:
+                    if response.status != 200:
+                        if page == 1:
+                            logger.warning(f"[solved.ac 검색 API] HTTP {response.status} 에러: {url}")
+                            return []
+                        # 첫 페이지가 아니면 더 이상 페이지가 없는 것으로 간주
+                        break
+                    
+                    html = await response.text()
+                    soup = BeautifulSoup(html, 'html.parser')
+                    
+                    # 첫 페이지에서 마지막 페이지 번호 파싱
+                    if page == 1 and last_page is None:
+                        # 페이지네이션 버튼에서 마지막 페이지 번호 찾기
+                        # 예: <a role="button" href="/problems?query=...&page=42">42</a>
+                        pagination_links = soup.find_all('a', href=re.compile(r'[?&]page=\d+'))
+                        page_numbers = []
+                        for link in pagination_links:
+                            href = link.get('href', '')
+                            match = re.search(r'[?&]page=(\d+)', href)
+                            if match:
+                                page_num = int(match.group(1))
+                                page_numbers.append(page_num)
+                        
+                        if page_numbers:
+                            last_page = max(page_numbers)
+                            logger.info(f"[solved.ac 검색 API] {baekjoon_id} - 총 {last_page}페이지 발견")
+                            # max_pages를 last_page로 제한
+                            max_pages = min(max_pages, last_page)
+                    
+                    # 페이지에서 문제 번호 추출
+                    page_problems = []
+                    problem_links = soup.find_all('a', href=re.compile(r'(?:acmicpc\.net/problem/|/problem/)\d+'))
+                    
+                    for link in problem_links:
+                        href = link.get('href', '')
+                        # 전체 URL 또는 상대 경로에서 문제 번호 추출
+                        match = re.search(r'(?:acmicpc\.net/problem/|/problem/)(\d+)', href)
+                        if match:
+                            problem_id = int(match.group(1))
+                            page_problems.append(problem_id)
+                    
+                    if not page_problems:
+                        # 페이지에 문제가 없으면 더 이상 페이지가 없는 것으로 간주
+                        break
+                    
+                    # target_problems에 있는 문제만 필터링
+                    for problem_id in page_problems:
                         if problem_id in target_set:
                             solved_problems.append(problem_id)
-                
-                # 방법 2: 테이블 셀에서 직접 문제 번호 찾기 (링크가 없는 경우 대비)
-                # 테이블의 모든 텍스트에서 문제 번호 패턴 찾기
-                # 하지만 이미 링크에서 찾은 문제는 제외
-                table_cells = soup.find_all(['td', 'th'])
-                for cell in table_cells:
-                    text = cell.get_text(strip=True)
-                    # 문제 번호 패턴 찾기 (예: "Sprout1000", "Bronze I2729", "1000" 등)
-                    # 4자리 이상 숫자만 (문제 번호는 보통 4자리 이상)
-                    matches = re.findall(r'\b(\d{4,})\b', text)
-                    for match_str in matches:
-                        try:
-                            problem_id = int(match_str)
-                            # target_problems 범위 내의 문제 번호인지 확인 (너무 큰 숫자 제외)
-                            # 그리고 이미 링크에서 찾은 문제는 제외
-                            if problem_id < 1000000 and problem_id not in found_ids_from_links:
-                                all_found_problems.append(problem_id)
-                                if problem_id in target_set:
-                                    solved_problems.append(problem_id)
-                        except ValueError:
-                            continue
+                    
+                    # 모든 목표 문제를 찾았으면 조기 종료
+                    found_set = set(solved_problems)
+                    if len(found_set) == len(target_set):
+                        logger.info(f"[solved.ac 검색 API] {baekjoon_id} - 목표 문제 {len(target_set)}개를 모두 찾아 조기 종료 (페이지 {page}/{last_page or '?'})")
+                        break
+                    
+                    # 마지막 페이지에 도달했으면 종료
+                    if last_page and page >= last_page:
+                        break
+                    
+                    page += 1
+                    await asyncio.sleep(0.3)  # Rate limiting 방지
                 
                 # 중복 제거 및 정렬
                 solved_problems = sorted(list(set(solved_problems)))
-                all_found_problems = sorted(list(set(all_found_problems)))
                 
-                # 디버깅: 검색 결과에 다른 문제가 포함되었는지 확인
-                unexpected = [pid for pid in all_found_problems if pid not in target_set]
-                if unexpected:
-                    logger.debug(f"[solved.ac 검색 API] 검색 결과에 예상치 못한 문제 발견: {unexpected[:10]} (필터링됨)")
-                
-                # 디버깅: 누락된 문제 확인
-                missing = [pid for pid in target_set if pid not in solved_problems]
-                if missing:
-                    logger.warning(f"[solved.ac 검색 API] {baekjoon_id} - 목표 문제 중 누락된 문제: {missing[:10]} (검색 결과에 없음)")
-                
-                logger.info(f"[solved.ac 검색 API] {baekjoon_id} - 목표 문제 중 {len(solved_problems)}/{len(target_problems)}개 해결 (검색 결과: {len(all_found_problems)}개, 필터링 후: {len(solved_problems)}개)")
+                logger.info(f"[solved.ac 검색 API] {baekjoon_id} - 목표 문제 중 {len(solved_problems)}/{len(target_problems)}개 해결 (페이지 {page-1}개 크롤링)")
                 return solved_problems
                 
     except Exception as e:
