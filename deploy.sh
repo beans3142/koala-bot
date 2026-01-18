@@ -41,13 +41,33 @@ echo "🔄 봇 재시작 중..."
 
 # systemd 사용하는 경우 (권장)
 if systemctl is-active --quiet discord-bot 2>/dev/null; then
-  sudo systemctl restart discord-bot
+  echo "🛑 기존 봇 프로세스 종료 중..."
+  sudo systemctl stop discord-bot || true
+  sleep 2
+  
+  echo "📦 systemd 서비스로 시작 중..."
+  sudo systemctl start discord-bot || {
+    echo "❌ 봇 시작 실패. 최근 로그:"
+    echo "=========================================="
+    sudo journalctl -u discord-bot -n 50 --no-pager || echo "로그를 가져올 수 없습니다"
+    echo "=========================================="
+    exit 1
+  }
+  
   echo "✅ systemd로 봇 재시작 완료"
   sleep 3
+  
   if systemctl is-active --quiet discord-bot; then
     echo "✅ 봇이 정상적으로 실행 중입니다"
+    echo "📋 최근 로그 (마지막 20줄):"
+    echo "=========================================="
+    sudo journalctl -u discord-bot -n 20 --no-pager || echo "로그를 가져올 수 없습니다"
+    echo "=========================================="
   else
-    echo "❌ 봇 재시작 실패. 로그 확인: sudo journalctl -u discord-bot -n 50"
+    echo "❌ 봇 재시작 실패. 최근 로그:"
+    echo "=========================================="
+    sudo journalctl -u discord-bot -n 50 --no-pager || echo "로그를 가져올 수 없습니다"
+    echo "=========================================="
     exit 1
   fi
 else
@@ -59,8 +79,15 @@ else
   sleep 3
   if pgrep -f "python.*main.py" > /dev/null; then
     echo "✅ 봇 재시작 완료 (직접 실행)"
+    echo "📋 최근 로그 (마지막 20줄):"
+    echo "=========================================="
+    tail -n 20 bot.log 2>/dev/null || echo "로그 파일을 찾을 수 없습니다"
+    echo "=========================================="
   else
-    echo "❌ 봇 프로세스를 찾을 수 없습니다. 로그 확인: tail -f bot.log"
+    echo "❌ 봇 프로세스를 찾을 수 없습니다. 로그:"
+    echo "=========================================="
+    tail -n 50 bot.log 2>/dev/null || echo "로그 파일을 찾을 수 없습니다"
+    echo "=========================================="
     exit 1
   fi
 fi
