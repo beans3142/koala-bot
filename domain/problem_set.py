@@ -40,9 +40,20 @@ def setup(bot):
     @commands.has_permissions(administrator=True)
     async def problem_set_create(ctx, *, name: str):
         """문제집 생성 (관리자 전용) - 폼으로 문제 번호 입력"""
-        # Modal 표시
-        modal = ProblemSetCreateModal(name)
-        await ctx.send_modal(modal)
+        # 이미 존재하는지 확인
+        existing = get_problem_set(name)
+        if existing:
+            await ctx.send(f"❌ '{name}' 문제집이 이미 존재합니다.")
+            return
+        
+        # 버튼을 사용하여 Modal 열기
+        view = ProblemSetCreateView(name, ctx.author)
+        embed = discord.Embed(
+            title="📚 문제집 생성",
+            description=f"**문제집명:** {name}\n\n아래 버튼을 클릭하여 문제 번호를 입력하세요.",
+            color=discord.Color.blue()
+        )
+        await ctx.send(embed=embed, view=view)
     
     @problem_set_group.command(name='풀이현황')
     @commands.has_permissions(administrator=True)
@@ -173,10 +184,15 @@ def setup(bot):
             await ctx.send(f"❌ '{name}' 문제집을 찾을 수 없습니다.")
             return
         
-        # Modal 표시 (기존 문제 번호 포함)
+        # 버튼을 사용하여 Modal 열기
         existing_problems = ','.join(map(str, problem_set['problem_ids']))
-        modal = ProblemSetUpdateModal(name, existing_problems)
-        await ctx.send_modal(modal)
+        view = ProblemSetUpdateView(name, existing_problems, ctx.author)
+        embed = discord.Embed(
+            title="📚 문제집 수정",
+            description=f"**문제집명:** {name}\n**현재 문제 수:** {len(problem_set['problem_ids'])}개\n\n아래 버튼을 클릭하여 문제 번호를 수정하세요.",
+            color=discord.Color.blue()
+        )
+        await ctx.send(embed=embed, view=view)
     
     @problem_set_group.command(name='삭제')
     @commands.has_permissions(administrator=True)
@@ -241,9 +257,20 @@ def setup(bot):
     @commands.has_permissions(administrator=True)
     async def mock_test_create(ctx, *, name: str):
         """모의테스트 생성 (관리자 전용) - 폼으로 문제 번호 입력"""
-        # Modal 표시
-        modal = MockTestCreateModal(name)
-        await ctx.send_modal(modal)
+        # 이미 존재하는지 확인
+        existing = get_mock_test(name)
+        if existing:
+            await ctx.send(f"❌ '{name}' 모의테스트가 이미 존재합니다.")
+            return
+        
+        # 버튼을 사용하여 Modal 열기
+        view = MockTestCreateView(name, ctx.author)
+        embed = discord.Embed(
+            title="📝 모의테스트 생성",
+            description=f"**모의테스트명:** {name}\n\n아래 버튼을 클릭하여 문제 번호를 입력하세요.",
+            color=discord.Color.purple()
+        )
+        await ctx.send(embed=embed, view=view)
     
     @mock_test_group.command(name='풀이현황')
     @commands.has_permissions(administrator=True)
@@ -374,10 +401,15 @@ def setup(bot):
             await ctx.send(f"❌ '{name}' 모의테스트를 찾을 수 없습니다.")
             return
         
-        # Modal 표시 (기존 문제 번호 포함)
+        # 버튼을 사용하여 Modal 열기
         existing_problems = ','.join(map(str, mock_test['problem_ids']))
-        modal = MockTestUpdateModal(name, existing_problems)
-        await ctx.send_modal(modal)
+        view = MockTestUpdateView(name, existing_problems, ctx.author)
+        embed = discord.Embed(
+            title="📝 모의테스트 수정",
+            description=f"**모의테스트명:** {name}\n**현재 문제 수:** {len(mock_test['problem_ids'])}개\n\n아래 버튼을 클릭하여 문제 번호를 수정하세요.",
+            color=discord.Color.purple()
+        )
+        await ctx.send(embed=embed, view=view)
     
     @mock_test_group.command(name='삭제')
     @commands.has_permissions(administrator=True)
@@ -429,6 +461,82 @@ def setup(bot):
             embed.set_footer(text=f"... 외 {len(mock_tests) - 20}개")
         
         await ctx.send(embed=embed)
+
+
+# ==================== View 클래스 (Modal 열기용) ====================
+
+class ProblemSetCreateView(discord.ui.View):
+    """문제집 생성 버튼 View"""
+    
+    def __init__(self, name: str, author):
+        super().__init__(timeout=300)
+        self.name = name
+        self.author = author
+    
+    @discord.ui.button(label='📝 문제 번호 입력', style=discord.ButtonStyle.primary)
+    async def create_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user != self.author:
+            await interaction.response.send_message("❌ 이 버튼은 명령어를 실행한 사용자만 사용할 수 있습니다.", ephemeral=True)
+            return
+        
+        modal = ProblemSetCreateModal(self.name)
+        await interaction.response.send_modal(modal)
+
+
+class ProblemSetUpdateView(discord.ui.View):
+    """문제집 수정 버튼 View"""
+    
+    def __init__(self, name: str, existing_problems: str, author):
+        super().__init__(timeout=300)
+        self.name = name
+        self.existing_problems = existing_problems
+        self.author = author
+    
+    @discord.ui.button(label='📝 문제 번호 수정', style=discord.ButtonStyle.primary)
+    async def update_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user != self.author:
+            await interaction.response.send_message("❌ 이 버튼은 명령어를 실행한 사용자만 사용할 수 있습니다.", ephemeral=True)
+            return
+        
+        modal = ProblemSetUpdateModal(self.name, self.existing_problems)
+        await interaction.response.send_modal(modal)
+
+
+class MockTestCreateView(discord.ui.View):
+    """모의테스트 생성 버튼 View"""
+    
+    def __init__(self, name: str, author):
+        super().__init__(timeout=300)
+        self.name = name
+        self.author = author
+    
+    @discord.ui.button(label='📝 문제 번호 입력', style=discord.ButtonStyle.primary)
+    async def create_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user != self.author:
+            await interaction.response.send_message("❌ 이 버튼은 명령어를 실행한 사용자만 사용할 수 있습니다.", ephemeral=True)
+            return
+        
+        modal = MockTestCreateModal(self.name)
+        await interaction.response.send_modal(modal)
+
+
+class MockTestUpdateView(discord.ui.View):
+    """모의테스트 수정 버튼 View"""
+    
+    def __init__(self, name: str, existing_problems: str, author):
+        super().__init__(timeout=300)
+        self.name = name
+        self.existing_problems = existing_problems
+        self.author = author
+    
+    @discord.ui.button(label='📝 문제 번호 수정', style=discord.ButtonStyle.primary)
+    async def update_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user != self.author:
+            await interaction.response.send_message("❌ 이 버튼은 명령어를 실행한 사용자만 사용할 수 있습니다.", ephemeral=True)
+            return
+        
+        modal = MockTestUpdateModal(self.name, self.existing_problems)
+        await interaction.response.send_modal(modal)
 
 
 # ==================== Modal 클래스 ====================
