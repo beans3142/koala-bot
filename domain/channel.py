@@ -245,7 +245,7 @@ async def update_group_weekly_status(group_name: str, bot_instance):
 
 
 async def update_all_assignment_status(group_name: str, bot_instance):
-    """전체과제현황 메시지 갱신"""
+    """전체과제현황 메시지 갱신 - 모든 과제의 상세 정보를 합쳐서 표시"""
     status_info = get_group_all_assignment_status(group_name)
     if not status_info:
         return
@@ -292,7 +292,57 @@ async def update_all_assignment_status(group_name: str, bot_instance):
         color=discord.Color.gold()
     )
     
-    assignment_list = []
+    # 필요한 import
+    from common.database import get_link_submissions
+    from common.boj_utils import get_weekly_solved_count, get_user_solved_problems_from_solved_ac
+    from domain.problem_set import get_problem_set, get_mock_test
+    from common.logger import get_logger
+    logger = get_logger()
+    
+    guild = channel.guild if channel else None
+    
+    # 모든 멤버 수집 (역할 기준)
+    role_name = status_info['role_name']
+    all_users = get_role_users(role_name)
+    if not all_users:
+        embed.add_field(
+            name="과제 현황",
+            value="멤버가 없습니다.",
+            inline=False
+        )
+        await message.edit(embed=embed)
+        save_group_all_assignment_status(
+            group_name,
+            status_info['role_name'],
+            str(channel_id),
+            str(message_id),
+            week_start.isoformat(),
+            week_end.isoformat(),
+            now.isoformat(),
+        )
+        return
+    
+    # 멤버별 정보 정리
+    user_map = {}
+    for user_info in all_users:
+        user_id = user_info['user_id']
+        username = user_info['username']
+        boj_handle = user_info.get('boj_handle')
+        
+        display_name = username
+        if guild:
+            member = guild.get_member(int(user_id))
+            if member:
+                display_name = member.display_name
+        
+        user_map[user_id] = {
+            'username': display_name,
+            'boj_handle': boj_handle,
+        }
+    
+    # 각 과제별 정보 수집 (표 형식)
+    assignment_columns = []
+    user_status_map = {user_id: {} for user_id in user_map.keys()}
     
     # 링크제출 현황 (진행 중인 것만)
     if link_status:
@@ -302,7 +352,17 @@ async def update_all_assignment_status(group_name: str, bot_instance):
         link_week_end = ensure_kst(link_week_end)
         
         if link_week_start <= now <= link_week_end:
-            assignment_list.append("📝 **링크제출** - 🟢 진행 중")
+            assignment_columns.append("링크제출")
+            week_start_str = link_week_start.isoformat()
+            submissions = get_link_submissions(group_name, week_start_str)
+            
+            submission_map = {}
+            for sub in submissions:
+                submission_map[sub['user_id']] = sub['links']
+            
+            for user_id in user_map.keys():
+                links = submission_map.get(user_id, [])
+                user_status_map[user_id]["링크제출"] = "제출완료" if links else "미제출"
     
     # 문제풀이 현황 (진행 중인 것만)
     if problem_status:
@@ -312,7 +372,20 @@ async def update_all_assignment_status(group_name: str, bot_instance):
         problem_week_end = ensure_kst(problem_week_end)
         
         if problem_week_start <= now <= problem_week_end:
-            assignment_list.append("📊 **문제풀이** - 🟢 진행 중")
+            assignment_columns.append("문제풀이")
+            
+            for user_id, user_info in user_map.items():
+                boj_handle = user_info['boj_handle']
+                
+                if not boj_handle or boj_handle == '미등록':
+                    user_status_map[user_id]["문제풀이"] = "미등록"
+                    continue
+                
+                try:
+                    solved_data = await get_weekly_solved_count(boj_handle, problem_week_start, problem_week_end)
+                    user_status_map[user_id]["문제풀이"] = f"{solved_data['count']}개"
+                except Exception as e:
+                    user_status_map[user_id]["문제풀이"] = "오류"
     
     # 문제집 과제 현황 (진행 중인 것만)
     for ps_status in problem_set_statuses:
@@ -322,7 +395,31 @@ async def update_all_assignment_status(group_name: str, bot_instance):
         ps_week_end = ensure_kst(ps_week_end)
         
         if ps_week_start <= now <= ps_week_end:
-            assignment_list.append(f"📚 **문제집: {ps_status['problem_set_name']}** - 🟢 진행 중")
+            problem_set_name = ps_status['problem_set_name']
+            problem_set = get_problem_set(problem_set_name)
+            
+            if not problem_set:
+                continue
+            
+            assignment_columns.append(f"문제집:{problem_set_name}")
+            problem_ids = problem_set['problem_ids']
+            total_problems = len(problem_ids)
+            
+            for user_id, user_info in user_map.items():
+                boj_handle = user_info['boj_handle']
+                
+                if not boj_handle:
+                    user_status_map[user_id][f"문제집:{problem_set_name}"] = "[0/" + str(total_problems) + "]"
+                    continue
+                
+                try:
+                    solved_problems = await get_user_solved_problems_from_solved_ac(boj_handle, target_problems=problem_ids)
+                    solved_set = set(solved_problems)
+                    solved_count = len([pid for pid in problem_ids if pid in solved_set])
+                    user_status_map[user_id][f"문제집:{problem_set_name}"] = f"[{solved_count}/{total_problems}]"
+                except Exception as e:
+                    logger.error(f"문제집 과제 현황 조회 오류 ({boj_handle}): {e}", exc_info=True)
+                    user_status_map[user_id][f"문제집:{problem_set_name}"] = "[0/" + str(total_problems) + "]"
     
     # 모의테스트 과제 현황 (진행 중인 것만)
     for mt_status in mock_test_statuses:
@@ -332,20 +429,94 @@ async def update_all_assignment_status(group_name: str, bot_instance):
         mt_week_end = ensure_kst(mt_week_end)
         
         if mt_week_start <= now <= mt_week_end:
-            assignment_list.append(f"📝 **모의테스트: {mt_status['mock_test_name']}** - 🟢 진행 중")
+            mock_test_name = mt_status['mock_test_name']
+            mock_test = get_mock_test(mock_test_name)
+            
+            if not mock_test:
+                continue
+            
+            assignment_columns.append(f"모의테스트:{mock_test_name}")
+            problem_ids = [int(x) for x in mock_test['problem_ids'].split(',') if x.strip()]
+            total_problems = len(problem_ids)
+            
+            for user_id, user_info in user_map.items():
+                boj_handle = user_info['boj_handle']
+                
+                if not boj_handle:
+                    user_status_map[user_id][f"모의테스트:{mock_test_name}"] = "[0/" + str(total_problems) + "]"
+                    continue
+                
+                try:
+                    solved_problems = await get_user_solved_problems_from_solved_ac(boj_handle, target_problems=problem_ids)
+                    solved_set = set(solved_problems)
+                    solved_count = len([pid for pid in problem_ids if pid in solved_set])
+                    user_status_map[user_id][f"모의테스트:{mock_test_name}"] = f"[{solved_count}/{total_problems}]"
+                except Exception as e:
+                    logger.error(f"모의테스트 과제 현황 조회 오류 ({boj_handle}): {e}", exc_info=True)
+                    user_status_map[user_id][f"모의테스트:{mock_test_name}"] = "[0/" + str(total_problems) + "]"
     
-    if assignment_list:
+    # 표 형식으로 정리
+    if not assignment_columns:
         embed.add_field(
-            name="과제 목록",
-            value="\n".join(assignment_list),
+            name="과제 현황",
+            value="진행 중인 과제가 없습니다.",
             inline=False
         )
     else:
-        embed.add_field(
-            name="과제 목록",
-            value="등록된 과제가 없습니다.",
-            inline=False
-        )
+        # 헤더 생성
+        header = "ID | " + " | ".join(assignment_columns)
+        
+        # 각 멤버별 행 생성
+        table_rows = []
+        for user_id, user_info in user_map.items():
+            username = user_info['username']
+            boj_handle = user_info.get('boj_handle')
+            
+            # ID 표시 (BOJ 핸들이 있으면 표시, 없으면 사용자명만)
+            if boj_handle:
+                user_id_display = boj_handle
+            else:
+                user_id_display = username[:15]  # 최대 15자로 제한
+            
+            row_values = [user_id_display]
+            for col in assignment_columns:
+                status = user_status_map[user_id].get(col, "-")
+                row_values.append(status)
+            
+            table_rows.append(" | ".join(row_values))
+        
+        # 표 생성 (헤더 + 구분선 + 행들)
+        table_text = header + "\n" + "-" * len(header) + "\n" + "\n".join(table_rows)
+        
+        # Discord 필드 제한(1024자) 처리
+        if len(table_text) > 1024:
+            # 여러 필드로 나누기
+            chunk_size = 1000
+            chunks = []
+            current_chunk = header + "\n" + "-" * len(header) + "\n"
+            
+            for row in table_rows:
+                if len(current_chunk) + len(row) + 1 > chunk_size:
+                    chunks.append(current_chunk)
+                    current_chunk = row + "\n"
+                else:
+                    current_chunk += row + "\n"
+            
+            if current_chunk:
+                chunks.append(current_chunk)
+            
+            for i, chunk in enumerate(chunks):
+                embed.add_field(
+                    name=f"과제 현황" + (f" ({i+1})" if len(chunks) > 1 else ""),
+                    value=chunk[:1024],
+                    inline=False
+                )
+        else:
+            embed.add_field(
+                name="과제 현황",
+                value=table_text,
+                inline=False
+            )
     
     await message.edit(embed=embed)
     
