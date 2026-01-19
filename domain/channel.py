@@ -309,8 +309,20 @@ async def update_all_assignment_status(group_name: str, bot_instance, assignment
     
     guild = channel.guild if channel else None
     
+    # 할당된 과제 확인하여 버튼 동적 생성
+    has_problem = problem_status is not None
+    has_link = link_status is not None
+    has_problem_set = len(problem_set_statuses) > 0
+    has_mock_test = len(mock_test_statuses) > 0
+    
     # 갱신 버튼 추가
-    view = AllAssignmentStatusView()
+    view = AllAssignmentStatusView(
+        group_name=group_name,
+        has_problem=has_problem,
+        has_link=has_link,
+        has_problem_set=has_problem_set,
+        has_mock_test=has_mock_test
+    )
     
     # 모든 멤버 수집 (역할 기준)
     role_name = status_info['role_name']
@@ -363,91 +375,109 @@ async def update_all_assignment_status(group_name: str, bot_instance, assignment
                 # 기존 embed의 필드에서 표 정보 추출
                 for field in existing_embed.fields:
                     if field.name.startswith("과제 현황"):
-                        # 표 파싱 (헤더에서 컬럼 추출)
+                        # 표 파싱 (코드 블록 형식)
                         value = field.value
-                        if value and "|" in value:
-                            lines = value.split("\n")
+                        if value:
+                            # 코드 블록 제거 (```로 감싸져 있음)
+                            if value.startswith("```"):
+                                # 첫 번째 줄과 마지막 줄의 ``` 제거
+                                lines = value.split("\n")
+                                if len(lines) > 2:
+                                    lines = lines[1:-1]  # 첫 줄(```)과 마지막 줄(```) 제거
+                                else:
+                                    lines = []
+                            else:
+                                lines = value.split("\n")
+                            
                             if len(lines) >= 2:
                                 header_line = lines[0]
-                                if "ID |" in header_line:
-                                    # 헤더에서 컬럼 추출
-                                    header_parts = [p.strip() for p in header_line.split("|")]
-                                    if len(header_parts) > 1:
-                                        existing_assignment_columns = header_parts[1:]  # ID 제외
-                                        
-                                        # 각 행 파싱
-                                        for line in lines[2:]:  # 헤더와 구분선 제외
-                                            if "|" in line:
-                                                row_parts = [p.strip() for p in line.split("|")]
-                                                if len(row_parts) > 0:
-                                                    user_id_display = row_parts[0]
-                                                    # user_id_display로 user_id 찾기
-                                                    found_user_id = None
-                                                    for uid, uinfo in user_map.items():
-                                                        if uinfo.get('boj_handle') == user_id_display or uinfo['username'][:15] == user_id_display:
-                                                            found_user_id = uid
-                                                            break
-                                                    
-                                                    if found_user_id:
-                                                        for i, col in enumerate(existing_assignment_columns):
-                                                            if i + 1 < len(row_parts):
-                                                                existing_user_status_map[found_user_id][col] = row_parts[i + 1]
+                                # 공백으로 구분된 헤더 파싱 (코드 블록 형식: "ID  링크제출  문제풀이")
+                                header_parts = [p.strip() for p in header_line.split("  ") if p.strip()]
+                                if len(header_parts) > 1 and header_parts[0].upper() == "ID":
+                                    existing_assignment_columns = header_parts[1:]  # ID 제외
+                                    
+                                    # 각 행 파싱
+                                    for line in lines[2:]:  # 헤더와 구분선 제외
+                                        if line.strip():
+                                            row_parts = [p.strip() for p in line.split("  ") if p.strip()]
+                                            if len(row_parts) > 0:
+                                                user_id_display = row_parts[0]
+                                                # user_id_display로 user_id 찾기
+                                                found_user_id = None
+                                                for uid, uinfo in user_map.items():
+                                                    if uinfo.get('boj_handle') == user_id_display or uinfo['username'][:15] == user_id_display:
+                                                        found_user_id = uid
+                                                        break
+                                                
+                                                if found_user_id:
+                                                    for i, col in enumerate(existing_assignment_columns):
+                                                        if i + 1 < len(row_parts):
+                                                            existing_user_status_map[found_user_id][col] = row_parts[i + 1]
         except Exception as e:
             logger.error(f"기존 embed 파싱 오류: {e}", exc_info=True)
             # 파싱 실패 시 전체 갱신으로 폴백
             assignment_type = None
     
     # 각 과제별 정보 수집 (표 형식)
-    assignment_columns = existing_assignment_columns.copy() if assignment_type and existing_assignment_columns else []
-    user_status_map = existing_user_status_map.copy() if assignment_type else {user_id: {} for user_id in user_map.keys()}
+    # 부분 갱신 시에도 모든 컬럼을 포함해야 함 (해당 타입만 갱신, 나머지는 기존 값 유지)
+    if assignment_type and existing_assignment_columns:
+        assignment_columns = existing_assignment_columns.copy()
+        user_status_map = existing_user_status_map.copy()
+    else:
+        assignment_columns = []
+        user_status_map = {user_id: {} for user_id in user_map.keys()}
     
     # 링크제출 현황 (진행 중인 것만)
-    if link_status and (not assignment_type or assignment_type == "링크제출"):
-        link_week_start = datetime.fromisoformat(link_status['week_start'])
-        link_week_end = datetime.fromisoformat(link_status['week_end'])
-        link_week_start = ensure_kst(link_week_start)
-        link_week_end = ensure_kst(link_week_end)
-        
-        if link_week_start <= now <= link_week_end:
-            assignment_columns.append("링크제출")
-            week_start_str = link_week_start.isoformat()
-            submissions = get_link_submissions(group_name, week_start_str)
+    # 부분 갱신이 아니거나 링크제출 갱신인 경우에만 처리
+    if link_status:
+        if not assignment_type or assignment_type == "링크제출":
+            link_week_start = datetime.fromisoformat(link_status['week_start'])
+            link_week_end = datetime.fromisoformat(link_status['week_end'])
+            link_week_start = ensure_kst(link_week_start)
+            link_week_end = ensure_kst(link_week_end)
             
-            submission_map = {}
-            for sub in submissions:
-                submission_map[sub['user_id']] = sub['links']
-            
-            for user_id in user_map.keys():
-                links = submission_map.get(user_id, [])
-                user_status_map[user_id]["링크제출"] = "제출완료" if links else "미제출"
+            if link_week_start <= now <= link_week_end:
+                if "링크제출" not in assignment_columns:
+                    assignment_columns.append("링크제출")
+                week_start_str = link_week_start.isoformat()
+                submissions = get_link_submissions(group_name, week_start_str)
+                
+                submission_map = {}
+                for sub in submissions:
+                    submission_map[sub['user_id']] = sub['links']
+                
+                for user_id in user_map.keys():
+                    links = submission_map.get(user_id, [])
+                    user_status_map[user_id]["링크제출"] = "제출완료" if links else "미제출"
     
     # 문제풀이 현황 (진행 중인 것만)
-    if problem_status and (not assignment_type or assignment_type == "문제풀이"):
-        problem_week_start = datetime.fromisoformat(problem_status['week_start'])
-        problem_week_end = datetime.fromisoformat(problem_status['week_end'])
-        problem_week_start = ensure_kst(problem_week_start)
-        problem_week_end = ensure_kst(problem_week_end)
-        
-        if problem_week_start <= now <= problem_week_end:
-            assignment_columns.append("문제풀이")
+    # 부분 갱신이 아니거나 문제풀이 갱신인 경우에만 처리
+    if problem_status:
+        if not assignment_type or assignment_type == "문제풀이":
+            problem_week_start = datetime.fromisoformat(problem_status['week_start'])
+            problem_week_end = datetime.fromisoformat(problem_status['week_end'])
+            problem_week_start = ensure_kst(problem_week_start)
+            problem_week_end = ensure_kst(problem_week_end)
             
-            for user_id, user_info in user_map.items():
-                boj_handle = user_info['boj_handle']
+            if problem_week_start <= now <= problem_week_end:
+                if "문제풀이" not in assignment_columns:
+                    assignment_columns.append("문제풀이")
                 
-                if not boj_handle or boj_handle == '미등록':
-                    user_status_map[user_id]["문제풀이"] = "미등록"
-                    continue
-                
-                try:
-                    solved_data = await get_weekly_solved_count(boj_handle, problem_week_start, problem_week_end)
-                    user_status_map[user_id]["문제풀이"] = f"{solved_data['count']}개"
-                except Exception as e:
-                    user_status_map[user_id]["문제풀이"] = "오류"
+                for user_id, user_info in user_map.items():
+                    boj_handle = user_info['boj_handle']
+                    
+                    if not boj_handle or boj_handle == '미등록':
+                        user_status_map[user_id]["문제풀이"] = "미등록"
+                        continue
+                    
+                    try:
+                        solved_data = await get_weekly_solved_count(boj_handle, problem_week_start, problem_week_end)
+                        user_status_map[user_id]["문제풀이"] = f"{solved_data['count']}개"
+                    except Exception as e:
+                        user_status_map[user_id]["문제풀이"] = "오류"
     
     # 문제집 과제 현황 (진행 중인 것만)
     for ps_status in problem_set_statuses:
-        if assignment_type and not assignment_type.startswith("문제집:"):
-            continue
         ps_week_start = datetime.fromisoformat(ps_status['week_start'])
         ps_week_end = datetime.fromisoformat(ps_status['week_end'])
         ps_week_start = ensure_kst(ps_week_start)
@@ -456,9 +486,19 @@ async def update_all_assignment_status(group_name: str, bot_instance, assignment
         if ps_week_start <= now <= ps_week_end:
             problem_set_name = ps_status['problem_set_name']
             
-            # 부분 갱신: 해당 문제집만 갱신
-            if assignment_type and assignment_type != f"문제집:{problem_set_name}":
-                continue
+            # 부분 갱신: 해당 문제집만 갱신, 나머지는 기존 값 유지
+            if assignment_type:
+                if assignment_type == f"문제집:{problem_set_name}":
+                    # 해당 문제집 갱신
+                    pass
+                elif f"문제집:{problem_set_name}" in assignment_columns:
+                    # 기존 컬럼에 있으면 유지 (갱신하지 않음)
+                    continue
+                else:
+                    # 기존 컬럼에 없으면 추가하지 않음
+                    continue
+            
+            # 부분 갱신이 아니거나 해당 문제집 갱신인 경우
             
             problem_set = get_problem_set(problem_set_name)
             
@@ -467,6 +507,7 @@ async def update_all_assignment_status(group_name: str, bot_instance, assignment
             
             if f"문제집:{problem_set_name}" not in assignment_columns:
                 assignment_columns.append(f"문제집:{problem_set_name}")
+            
             problem_ids = problem_set['problem_ids']
             total_problems = len(problem_ids)
             
@@ -488,8 +529,14 @@ async def update_all_assignment_status(group_name: str, bot_instance, assignment
     
     # 모의테스트 과제 현황 (진행 중인 것만)
     for mt_status in mock_test_statuses:
+        # 부분 갱신이 아니거나 모의테스트 갱신인 경우에만 처리
         if assignment_type and not assignment_type.startswith("모의테스트:"):
-            continue
+            # 기존 컬럼에 있으면 유지 (갱신하지 않음)
+            mock_test_name = mt_status['mock_test_name']
+            if f"모의테스트:{mock_test_name}" in assignment_columns:
+                continue  # 기존 값 유지
+            else:
+                continue  # 추가하지 않음
         mt_week_start = datetime.fromisoformat(mt_status['week_start'])
         mt_week_end = datetime.fromisoformat(mt_status['week_end'])
         mt_week_start = ensure_kst(mt_week_start)
@@ -890,11 +937,210 @@ async def all_assignment_auto_create():
 
 
 class AllAssignmentStatusView(discord.ui.View):
-    """전체과제현황 View (persistent, 갱신 버튼 없음 - 직접 갱신 불가)"""
+    """전체과제현황 View (persistent, 부분별 갱신 버튼 포함)"""
 
-    def __init__(self):
+    def __init__(self, group_name: str = None, 
+                 has_problem: bool = False,
+                 has_link: bool = False,
+                 has_problem_set: bool = False,
+                 has_mock_test: bool = False):
         super().__init__(timeout=None)
-        # 갱신 버튼 없음 - 직접 갱신 불가능, 부분 갱신만 가능
+        self.group_name = group_name  # 그룹명 저장 (persistent view에서 사용)
+        
+        # 전체 갱신 버튼은 항상 추가
+        refresh_all_btn = discord.ui.Button(
+            label="전체 갱신", 
+            emoji="🔄", 
+            style=discord.ButtonStyle.primary, 
+            custom_id="all_assignment_refresh_all"
+        )
+        refresh_all_btn.callback = self.refresh_all_button
+        self.add_item(refresh_all_btn)
+        
+        # 할당된 과제에 따라 버튼 추가
+        if has_problem:
+            problem_btn = discord.ui.Button(
+                label="문제풀이 갱신", 
+                emoji="📊", 
+                style=discord.ButtonStyle.secondary, 
+                custom_id="all_assignment_refresh_problem"
+            )
+            problem_btn.callback = self.refresh_problem_button
+            self.add_item(problem_btn)
+        
+        if has_link:
+            link_btn = discord.ui.Button(
+                label="링크제출 갱신", 
+                emoji="📝", 
+                style=discord.ButtonStyle.secondary, 
+                custom_id="all_assignment_refresh_link"
+            )
+            link_btn.callback = self.refresh_link_button
+            self.add_item(link_btn)
+        
+        if has_problem_set:
+            problem_set_btn = discord.ui.Button(
+                label="문제집 갱신", 
+                emoji="📚", 
+                style=discord.ButtonStyle.secondary, 
+                custom_id="all_assignment_refresh_problem_set"
+            )
+            problem_set_btn.callback = self.refresh_problem_set_button
+            self.add_item(problem_set_btn)
+        
+        if has_mock_test:
+            mock_test_btn = discord.ui.Button(
+                label="모의테스트 갱신", 
+                emoji="📝", 
+                style=discord.ButtonStyle.secondary, 
+                custom_id="all_assignment_refresh_mock_test"
+            )
+            mock_test_btn.callback = self.refresh_mock_test_button
+            self.add_item(mock_test_btn)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item):
+        try:
+            msg = f"❌ 갱신 처리 중 오류가 발생했습니다: {type(error).__name__}: {error}"
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except Exception:
+            pass
+
+    async def refresh_all_button(self, interaction: discord.Interaction):
+        # 메시지 기준으로 그룹 찾기
+        info = get_group_all_assignment_status_by_message(str(interaction.channel.id), str(interaction.message.id))
+        if not info:
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ 이 메시지는 전체과제현황으로 등록되어 있지 않습니다.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ 이 메시지는 전체과제현황으로 등록되어 있지 않습니다.", ephemeral=True)
+            return
+
+        week_start = datetime.fromisoformat(info['week_start'])
+        week_end = datetime.fromisoformat(info['week_end'])
+        week_start = ensure_kst(week_start)
+        week_end = ensure_kst(week_end)
+        now = get_kst_now()
+
+        if not (week_start <= now <= week_end + timedelta(minutes=5)):
+            if interaction.response.is_done():
+                await interaction.followup.send("⚠️ 이 메시지의 기간이 종료되어 더 이상 갱신할 수 없습니다.", ephemeral=True)
+            else:
+                await interaction.response.send_message("⚠️ 이 메시지의 기간이 종료되어 더 이상 갱신할 수 없습니다.", ephemeral=True)
+            return
+
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+        
+        # 전체 갱신
+        await update_all_assignment_status(info['group_name'], interaction.client, assignment_type=None)
+        await interaction.followup.send("✅ 전체과제현황이 갱신되었습니다.", ephemeral=True)
+
+    async def refresh_problem_button(self, interaction: discord.Interaction):
+        info = get_group_all_assignment_status_by_message(str(interaction.channel.id), str(interaction.message.id))
+        if not info:
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ 이 메시지는 전체과제현황으로 등록되어 있지 않습니다.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ 이 메시지는 전체과제현황으로 등록되어 있지 않습니다.", ephemeral=True)
+            return
+
+        week_start = datetime.fromisoformat(info['week_start'])
+        week_end = datetime.fromisoformat(info['week_end'])
+        week_start = ensure_kst(week_start)
+        week_end = ensure_kst(week_end)
+        now = get_kst_now()
+
+        if not (week_start <= now <= week_end + timedelta(minutes=5)):
+            if interaction.response.is_done():
+                await interaction.followup.send("⚠️ 이 메시지의 기간이 종료되어 더 이상 갱신할 수 없습니다.", ephemeral=True)
+            else:
+                await interaction.response.send_message("⚠️ 이 메시지의 기간이 종료되어 더 이상 갱신할 수 없습니다.", ephemeral=True)
+            return
+
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+        
+        # 문제풀이 갱신 (자동으로 전체과제현황도 갱신됨)
+        await update_group_weekly_status(info['group_name'], interaction.client)
+        await interaction.followup.send("✅ 문제풀이 현황이 갱신되었습니다.", ephemeral=True)
+
+    async def refresh_link_button(self, interaction: discord.Interaction):
+        info = get_group_all_assignment_status_by_message(str(interaction.channel.id), str(interaction.message.id))
+        if not info:
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ 이 메시지는 전체과제현황으로 등록되어 있지 않습니다.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ 이 메시지는 전체과제현황으로 등록되어 있지 않습니다.", ephemeral=True)
+            return
+
+        week_start = datetime.fromisoformat(info['week_start'])
+        week_end = datetime.fromisoformat(info['week_end'])
+        week_start = ensure_kst(week_start)
+        week_end = ensure_kst(week_end)
+        now = get_kst_now()
+
+        if not (week_start <= now <= week_end + timedelta(minutes=5)):
+            if interaction.response.is_done():
+                await interaction.followup.send("⚠️ 이 메시지의 기간이 종료되어 더 이상 갱신할 수 없습니다.", ephemeral=True)
+            else:
+                await interaction.response.send_message("⚠️ 이 메시지의 기간이 종료되어 더 이상 갱신할 수 없습니다.", ephemeral=True)
+            return
+
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+        
+        # 링크제출 갱신 (자동으로 전체과제현황도 갱신됨)
+        from domain.link_submission import update_link_submission_status
+        await update_link_submission_status(info['group_name'], interaction.client)
+        await interaction.followup.send("✅ 링크제출 현황이 갱신되었습니다.", ephemeral=True)
+
+    async def refresh_problem_set_button(self, interaction: discord.Interaction):
+        info = get_group_all_assignment_status_by_message(str(interaction.channel.id), str(interaction.message.id))
+        if not info:
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ 이 메시지는 전체과제현황으로 등록되어 있지 않습니다.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ 이 메시지는 전체과제현황으로 등록되어 있지 않습니다.", ephemeral=True)
+            return
+
+        week_start = datetime.fromisoformat(info['week_start'])
+        week_end = datetime.fromisoformat(info['week_end'])
+        week_start = ensure_kst(week_start)
+        week_end = ensure_kst(week_end)
+        now = get_kst_now()
+
+        if not (week_start <= now <= week_end + timedelta(minutes=5)):
+            if interaction.response.is_done():
+                await interaction.followup.send("⚠️ 이 메시지의 기간이 종료되어 더 이상 갱신할 수 없습니다.", ephemeral=True)
+            else:
+                await interaction.response.send_message("⚠️ 이 메시지의 기간이 종료되어 더 이상 갱신할 수 없습니다.", ephemeral=True)
+            return
+
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+        
+        # 문제집 갱신 (모든 문제집 갱신)
+        from domain.problem_set import get_all_group_problem_set_status, update_problem_set_status
+        problem_set_statuses = [ps for ps in get_all_group_problem_set_status() if ps['group_name'] == info['group_name']]
+        
+        updated_count = 0
+        for ps_status in problem_set_statuses:
+            ps_week_start = datetime.fromisoformat(ps_status['week_start'])
+            ps_week_end = datetime.fromisoformat(ps_status['week_end'])
+            ps_week_start = ensure_kst(ps_week_start)
+            ps_week_end = ensure_kst(ps_week_end)
+            
+            if ps_week_start <= now <= ps_week_end:
+                await update_problem_set_status(info['group_name'], ps_status['problem_set_name'], interaction.client)
+                updated_count += 1
+        
+        if updated_count > 0:
+            await interaction.followup.send(f"✅ 문제집 현황 {updated_count}개가 갱신되었습니다.", ephemeral=True)
+        else:
+            await interaction.followup.send("⚠️ 갱신 가능한 문제집이 없습니다.", ephemeral=True)
 
 
 class GroupWeeklyStatusView(discord.ui.View):
@@ -1877,8 +2123,20 @@ def setup(bot):
                 color=discord.Color.gold()
             )
             
+            # 할당된 과제 확인하여 버튼 동적 생성
+            has_problem = problem_status is not None
+            has_link = link_status is not None
+            has_problem_set = len(problem_set_statuses) > 0
+            has_mock_test = len(mock_test_statuses) > 0
+            
             # 갱신 버튼 추가
-            view = AllAssignmentStatusView()
+            view = AllAssignmentStatusView(
+                group_name=group_name,
+                has_problem=has_problem,
+                has_link=has_link,
+                has_problem_set=has_problem_set,
+                has_mock_test=has_mock_test
+            )
             
             # 지정된 채널에 메시지 전송
             msg = await target_channel.send(embed=embed, view=view)
