@@ -139,6 +139,21 @@ def init_database():
         )
     ''')
     
+    # 모의테스트 과제 상태 테이블
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS group_mock_test_status (
+            group_name TEXT,
+            mock_test_name TEXT,
+            role_name TEXT,
+            channel_id TEXT,
+            message_id TEXT,
+            week_start TEXT,
+            week_end TEXT,
+            last_updated TEXT,
+            PRIMARY KEY (group_name, mock_test_name)
+        )
+    ''')
+    
     # 그룹 주간 링크 제출 메시지 테이블
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS group_link_submissions (
@@ -174,6 +189,19 @@ def init_database():
             created_at TEXT,
             created_by TEXT,
             updated_at TEXT
+        )
+    ''')
+    
+    # 전체과제현황 테이블
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS group_all_assignment_status (
+            group_name TEXT PRIMARY KEY,
+            role_name TEXT,
+            channel_id TEXT,
+            message_id TEXT,
+            week_start TEXT,
+            week_end TEXT,
+            last_updated TEXT
         )
     ''')
     
@@ -744,6 +772,112 @@ def delete_group_problem_set_status(group_name: str, problem_set_name: str):
     
     cursor.execute('DELETE FROM group_problem_set_status WHERE group_name = ? AND problem_set_name = ?',
                    (group_name, problem_set_name))
+    conn.commit()
+    conn.close()
+
+# ==================== 모의테스트 과제 상태 관리 ====================
+
+def save_group_mock_test_status(group_name: str, mock_test_name: str, role_name: str,
+                                 channel_id: str, message_id: str, week_start: str, week_end: str,
+                                 last_updated: Optional[str] = None):
+    """모의테스트 과제 상태 메시지 저장"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    now = last_updated or datetime.now().isoformat()
+    cursor.execute('''
+        INSERT OR REPLACE INTO group_mock_test_status
+        (group_name, mock_test_name, role_name, channel_id, message_id, week_start, week_end, last_updated)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (group_name, mock_test_name, role_name, channel_id, message_id, week_start, week_end, now))
+    
+    conn.commit()
+    conn.close()
+
+def get_group_mock_test_status(group_name: str, mock_test_name: str) -> Optional[Dict]:
+    """모의테스트 과제 상태 메시지 가져오기"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM group_mock_test_status WHERE group_name = ? AND mock_test_name = ?',
+                   (group_name, mock_test_name))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if row:
+        return dict(row)
+    return None
+
+def get_all_group_mock_test_status() -> List[Dict]:
+    """모든 모의테스트 과제 상태 메시지 목록 가져오기"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM group_mock_test_status')
+    rows = cursor.fetchall()
+    conn.close()
+    
+    return [dict(row) for row in rows]
+
+def delete_group_mock_test_status(group_name: str, mock_test_name: str):
+    """모의테스트 과제 상태 메시지 삭제"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('DELETE FROM group_mock_test_status WHERE group_name = ? AND mock_test_name = ?',
+                   (group_name, mock_test_name))
+    conn.commit()
+    conn.close()
+
+# ==================== 전체과제현황 관리 ====================
+
+def save_group_all_assignment_status(group_name: str, role_name: str, channel_id: str,
+                                     message_id: str, week_start: str, week_end: str,
+                                     last_updated: Optional[str] = None):
+    """전체과제현황 메시지 저장"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    now = last_updated or datetime.now().isoformat()
+    cursor.execute('''
+        INSERT OR REPLACE INTO group_all_assignment_status
+        (group_name, role_name, channel_id, message_id, week_start, week_end, last_updated)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', (group_name, role_name, channel_id, message_id, week_start, week_end, now))
+    
+    conn.commit()
+    conn.close()
+
+def get_group_all_assignment_status(group_name: str) -> Optional[Dict]:
+    """전체과제현황 메시지 가져오기"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM group_all_assignment_status WHERE group_name = ?', (group_name,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if row:
+        return dict(row)
+    return None
+
+def get_all_group_all_assignment_status() -> List[Dict]:
+    """모든 전체과제현황 메시지 목록 가져오기"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM group_all_assignment_status')
+    rows = cursor.fetchall()
+    conn.close()
+    
+    return [dict(row) for row in rows]
+
+def delete_group_all_assignment_status(group_name: str):
+    """전체과제현황 메시지 삭제"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('DELETE FROM group_all_assignment_status WHERE group_name = ?', (group_name,))
     conn.commit()
     conn.close()
 

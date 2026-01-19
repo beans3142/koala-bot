@@ -22,6 +22,10 @@ from common.database import (
     get_group_problem_set_status,
     get_all_group_problem_set_status,
     delete_group_problem_set_status,
+    save_group_mock_test_status,
+    get_group_mock_test_status,
+    get_all_group_mock_test_status,
+    delete_group_mock_test_status,
 )
 from common.utils import load_data, get_kst_now, ensure_kst
 from domain.channel import find_role_by_group_name
@@ -33,6 +37,9 @@ logger = get_logger()
 
 # 문제집 과제 자동 갱신용
 _bot_for_problem_set = None
+
+# 모의테스트 과제 자동 갱신용
+_bot_for_mock_test = None
 
 
 async def update_problem_set_status(group_name: str, problem_set_name: str, bot_instance):
@@ -210,8 +217,195 @@ async def update_problem_set_status(group_name: str, problem_set_name: str, bot_
         week_end.isoformat(),
         now.isoformat(),
     )
-    
+
     await message.edit(embed=embed, view=ProblemSetStatusView(group_name, problem_set_name))
+    
+    # 전체과제현황도 갱신
+    from domain.channel import update_all_assignment_status
+    await update_all_assignment_status(group_name, bot_instance)
+
+
+async def update_mock_test_status(group_name: str, mock_test_name: str, bot_instance):
+    """모의테스트 과제 현황 메시지 갱신"""
+    status_info = get_group_mock_test_status(group_name, mock_test_name)
+    if not status_info:
+        return
+    
+    channel_id = int(status_info['channel_id'])
+    message_id = int(status_info['message_id'])
+    role_name = status_info['role_name']
+    week_start = datetime.fromisoformat(status_info['week_start'])
+    week_end = datetime.fromisoformat(status_info['week_end'])
+    
+    # timezone-naive면 KST timezone 추가
+    week_start = ensure_kst(week_start)
+    week_end = ensure_kst(week_end)
+    
+    now = get_kst_now()
+    # 기간 밖이면 갱신하지 않음 (단, 월요일 01시 정각은 마지막 크롤링 허용)
+    if not (week_start <= now <= week_end + timedelta(minutes=5)):
+        return
+    
+    channel = bot_instance.get_channel(channel_id)
+    if not channel:
+        return
+    
+    try:
+        message = await channel.fetch_message(message_id)
+    except discord.NotFound:
+        delete_group_mock_test_status(group_name, mock_test_name)
+        return
+    
+    # 모의테스트 정보 가져오기
+    mock_test = get_mock_test(mock_test_name)
+    if not mock_test:
+        return
+    
+    problem_ids = [int(x) for x in mock_test['problem_ids'].split(',') if x.strip()]
+    total_problems = len(problem_ids)
+    
+    # 그룹 멤버 가져오기
+    users = get_role_users(role_name)
+    if not users:
+        embed = discord.Embed(
+            title=f"📝 '{mock_test_name}' 모의테스트 과제",
+            description=(
+                f"**그룹:** {group_name}\n"
+                f"**전체 문제 수:** {total_problems}개\n"
+                f"**기간:** {week_start.strftime('%Y-%m-%d')} ~ {week_end.strftime('%Y-%m-%d %H:%M')}\n"
+                f"**마지막 갱신:** {now.strftime('%Y-%m-%d %H:%M')}\n"
+                f"(멤버 없음)"
+            ),
+            color=discord.Color.blue(),
+        )
+        await message.edit(embed=embed, view=MockTestStatusView(group_name, mock_test_name))
+        return
+    
+    # 각 멤버의 해결 현황 조회
+    results = []
+    for user_info in users:
+        user_id = user_info['user_id']
+        username = user_info.get('username', 'Unknown')
+        boj_handle = user_info.get('boj_handle')
+        
+        if not boj_handle:
+            results.append({
+                'username': username,
+                'boj_handle': None,
+                'solved_count': 0,
+                'total': total_problems,
+                'unsolved_problems': problem_ids.copy(),
+                'status': '⚠️'
+            })
+            continue
+        
+        try:
+            # solved.ac에서 해결한 문제 목록 가져오기
+            solved_problems = await get_user_solved_problems_from_solved_ac(boj_handle, target_problems=problem_ids)
+            solved_set = set(solved_problems)
+            
+            # 모의테스트 문제 중 해결한 문제 수
+            solved_count = len([pid for pid in problem_ids if pid in solved_set])
+            
+            # 안 푼 문제 번호 찾기
+            unsolved_problems = [pid for pid in problem_ids if pid not in solved_set]
+            
+            results.append({
+                'username': username,
+                'boj_handle': boj_handle,
+                'solved_count': solved_count,
+                'total': total_problems,
+                'unsolved_problems': unsolved_problems,
+                'status': '✅' if solved_count == total_problems else '📝'
+            })
+        except Exception as e:
+            logger.error(f"모의테스트 과제 현황 조회 오류 ({boj_handle}): {e}", exc_info=True)
+            results.append({
+                'username': username,
+                'boj_handle': boj_handle,
+                'solved_count': 0,
+                'total': total_problems,
+                'unsolved_problems': problem_ids.copy(),
+                'status': '❌'
+            })
+    
+    # 결과 정렬 (해결한 문제 수 내림차순)
+    results.sort(key=lambda x: x['solved_count'], reverse=True)
+    
+    # 임베드 생성
+    embed = discord.Embed(
+        title=f"📝 '{mock_test_name}' 모의테스트 과제",
+        description=(
+            f"**그룹:** {group_name}\n"
+            f"**전체 문제 수:** {total_problems}개\n"
+            f"**기간:** {week_start.strftime('%Y-%m-%d')} ~ {week_end.strftime('%Y-%m-%d %H:%M')}\n"
+            f"**마지막 갱신:** {now.strftime('%Y-%m-%d %H:%M')}"
+        ),
+        color=discord.Color.blue()
+    )
+    
+    # 멤버별 현황
+    status_text = ""
+    for i, result in enumerate(results[:20]):  # 최대 20명만 표시
+        emoji = "🥇" if i == 0 else "🥈" if i == 1 else "🥉" if i == 2 else "•"
+        boj_info = f" ({result['boj_handle']})" if result['boj_handle'] else ""
+        
+        # 안 푼 문제 번호 표시 (최대 5개)
+        unsolved_info = ""
+        if result['solved_count'] < result['total']:
+            unsolved_problems = result.get('unsolved_problems', [])
+            if unsolved_problems:
+                display_count = min(5, len(unsolved_problems))
+                unsolved_display = unsolved_problems[:display_count]
+                unsolved_info = f" [{','.join(map(str, unsolved_display))}"
+                if len(unsolved_problems) > 5:
+                    unsolved_info += "..."
+                unsolved_info += "]"
+        
+        status_text += f"{emoji} {result['username']}{boj_info} - {result['status']} [{result['solved_count']}/{result['total']}]{unsolved_info}\n"
+    
+    if len(results) > 20:
+        status_text += f"\n... 외 {len(results) - 20}명"
+    
+    embed.add_field(
+        name="멤버별 풀이 현황",
+        value=status_text or "멤버가 없습니다.",
+        inline=False
+    )
+    
+    # 통계
+    solved_all = sum(1 for r in results if r['solved_count'] == r['total'])
+    solved_some = sum(1 for r in results if 0 < r['solved_count'] < r['total'])
+    solved_none = sum(1 for r in results if r['solved_count'] == 0)
+    
+    embed.add_field(
+        name="📈 통계",
+        value=(
+            f"**총 멤버:** {len(results)}명\n"
+            f"**전부 해결:** {solved_all}명\n"
+            f"**일부 해결:** {solved_some}명\n"
+            f"**미해결:** {solved_none}명"
+        ),
+        inline=False
+    )
+    
+    # DB에 마지막 갱신 시간 저장
+    save_group_mock_test_status(
+        group_name,
+        mock_test_name,
+        role_name,
+        str(channel_id),
+        str(message_id),
+        week_start.isoformat(),
+        week_end.isoformat(),
+        now.isoformat(),
+    )
+
+    await message.edit(embed=embed, view=MockTestStatusView(group_name, mock_test_name))
+    
+    # 전체과제현황도 갱신
+    from domain.channel import update_all_assignment_status
+    await update_all_assignment_status(group_name, bot_instance)
 
 
 @tasks.loop(time=[time(hour=h, minute=0) for h in range(0, 24)])
@@ -249,6 +443,42 @@ async def problem_set_auto_update():
         # 기간 내에만 갱신
         if week_start <= now <= week_end:
             await update_problem_set_status(info['group_name'], info['problem_set_name'], _bot_for_problem_set)
+
+
+@tasks.loop(time=[time(hour=1, minute=0)])
+async def mock_test_auto_update():
+    """월요일 01시 정각 모의테스트 과제 자동 갱신 (한번만 수행)"""
+    global _bot_for_mock_test
+    if not _bot_for_mock_test:
+        return
+    
+    now = get_kst_now()
+    # 월요일 01시에만 실행
+    if now.weekday() != 0 or now.hour != 1 or now.minute != 0:
+        return
+    
+    for info in get_all_group_mock_test_status():
+        week_start = datetime.fromisoformat(info['week_start'])
+        week_end = datetime.fromisoformat(info['week_end'])
+        
+        # timezone-naive면 KST timezone 추가
+        week_start = ensure_kst(week_start)
+        week_end = ensure_kst(week_end)
+        
+        # 기간 내에만 갱신 (월요일 01시 정각은 마지막 크롤링 허용)
+        if week_start <= now <= week_end + timedelta(minutes=5):
+            await update_mock_test_status(info['group_name'], info['mock_test_name'], _bot_for_mock_test)
+            # DB에서 삭제
+            delete_group_mock_test_status(info['group_name'], info['mock_test_name'])
+            # 봇 알림 채널에 알림 전송
+            await send_bot_notification(
+                _bot_for_mock_test.get_guild(int(info.get('guild_id', 0)) or None),
+                "🗑️ 모의테스트 과제 종료",
+                f"**그룹:** {info['group_name']}\n"
+                f"**모의테스트:** {info['mock_test_name']}\n"
+                f"**기간 종료:** {week_end.strftime('%Y-%m-%d %H:%M')}",
+                discord.Color.orange()
+            )
 
 
 class ProblemSetStatusView(discord.ui.View):
@@ -316,6 +546,73 @@ class ProblemSetStatusView(discord.ui.View):
         problem_set_name = info['problem_set_name']
         await update_problem_set_status(group_name, problem_set_name, interaction.client)
         await interaction.followup.send("✅ 문제집 과제 현황이 갱신되었습니다.", ephemeral=True)
+
+
+class MockTestStatusView(discord.ui.View):
+    """모의테스트 과제 현황 수동 갱신 버튼 View (persistent)"""
+    
+    def __init__(self, group_name: str, mock_test_name: str):
+        super().__init__(timeout=None)
+        self.group_name = group_name
+        self.mock_test_name = mock_test_name
+    
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item):
+        try:
+            msg = f"❌ 갱신 처리 중 오류가 발생했습니다: {type(error).__name__}: {error}"
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except Exception:
+            pass
+    
+    @discord.ui.button(
+        label="갱신", emoji="🔄", style=discord.ButtonStyle.secondary,
+        custom_id="mock_test_status_refresh"  # 고정된 custom_id 사용
+    )
+    async def refresh_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # 메시지 기준으로 모의테스트 과제 찾기 (모든 모의테스트 과제를 확인하여 해당 메시지 찾기)
+        all_statuses = get_all_group_mock_test_status()
+        info = None
+        for status in all_statuses:
+            if str(status['channel_id']) == str(interaction.channel.id) and str(status['message_id']) == str(interaction.message.id):
+                info = status
+                break
+        
+        if not info:
+            # fallback: self에 저장된 정보 사용
+            info = get_group_mock_test_status(self.group_name, self.mock_test_name)
+        if not info:
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ 이 메시지는 모의테스트 과제로 등록되어 있지 않습니다.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ 이 메시지는 모의테스트 과제로 등록되어 있지 않습니다.", ephemeral=True)
+            return
+        
+        week_start = datetime.fromisoformat(info['week_start'])
+        week_end = datetime.fromisoformat(info['week_end'])
+        
+        # timezone-naive면 KST timezone 추가
+        week_start = ensure_kst(week_start)
+        week_end = ensure_kst(week_end)
+        
+        now = get_kst_now()
+        
+        if not (week_start <= now <= week_end + timedelta(minutes=5)):
+            if interaction.response.is_done():
+                await interaction.followup.send("⚠️ 이 메시지의 기간이 종료되어 더 이상 갱신할 수 없습니다.", ephemeral=True)
+            else:
+                await interaction.response.send_message("⚠️ 이 메시지의 기간이 종료되어 더 이상 갱신할 수 없습니다.", ephemeral=True)
+            return
+        
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+        
+        # info에서 그룹명과 모의테스트명 가져오기
+        group_name = info['group_name']
+        mock_test_name = info['mock_test_name']
+        await update_mock_test_status(group_name, mock_test_name, interaction.client)
+        await interaction.followup.send("✅ 모의테스트 과제 현황이 갱신되었습니다.", ephemeral=True)
 
 
 def register_problem_set_views(bot):
@@ -608,7 +905,7 @@ def setup(bot):
             return
         
         # 모의테스트 문제 목록
-        problem_ids = mock_test['problem_ids']
+        problem_ids = [int(x) for x in mock_test['problem_ids'].split(',') if x.strip()]
         total_problems = len(problem_ids)
         
         if total_problems == 0:

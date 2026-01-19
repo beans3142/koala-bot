@@ -39,12 +39,13 @@ class KoalaBot(commands.Bot):
         from domain.role import register_persistent_view
         from domain.channel import register_group_weekly_views
         from domain.link_submission import register_link_submission_views
-        from domain.problem_set import register_problem_set_views
+        from domain.problem_set import register_problem_set_views, register_mock_test_views
 
         register_persistent_view(self)
         register_group_weekly_views(self)
         register_link_submission_views(self)
         register_problem_set_views(self)
+        register_mock_test_views(self)
         print("[OK] Persistent views 등록 완료")
 
 
@@ -62,12 +63,13 @@ async def on_ready():
     from domain.role import start_weekly_status_scheduler
     from domain.channel import start_group_weekly_scheduler
     from domain.link_submission import start_link_submission_scheduler
-    from domain.problem_set import start_problem_set_scheduler
+    from domain.problem_set import start_problem_set_scheduler, start_mock_test_scheduler
 
     start_weekly_status_scheduler(bot)
     start_group_weekly_scheduler(bot)
     start_link_submission_scheduler(bot)
     start_problem_set_scheduler(bot)
+    start_mock_test_scheduler(bot)
 
 @bot.event
 async def on_command_error(ctx, error):

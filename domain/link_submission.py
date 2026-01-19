@@ -196,6 +196,10 @@ async def update_link_submission_status(group_name: str, bot_instance):
     )
 
     await message.edit(embed=embed, view=LinkSubmissionView())
+    
+    # 전체과제현황도 갱신
+    from domain.channel import update_all_assignment_status
+    await update_all_assignment_status(group_name, bot_instance)
 
 
 @tasks.loop(time=[time(hour=h, minute=0) for h in range(0, 24)])
