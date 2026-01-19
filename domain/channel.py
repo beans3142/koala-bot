@@ -1319,8 +1319,8 @@ def setup(bot):
         week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
         week_end = week_start + timedelta(days=7, hours=1)
         
-        # 모의테스트 문제 수
-        problem_ids = [int(x) for x in mock_test['problem_ids'].split(',') if x.strip()]
+        # 모의테스트 문제 수 (get_mock_test가 이미 리스트로 반환함)
+        problem_ids = mock_test['problem_ids'] if isinstance(mock_test['problem_ids'], list) else [int(x) for x in str(mock_test['problem_ids']).split(',') if x.strip()]
         total_problems = len(problem_ids)
         
         # 초기 임베드
