@@ -684,7 +684,13 @@ async def group_weekly_auto_update():
 
 @tasks.loop(time=[time(hour=1, minute=0)])
 async def all_assignment_auto_create():
-    """월요일 01시 정각 전체과제현황 자동 생성 및 삭제"""
+    """월요일 01시 정각 전체과제현황 자동 생성 및 삭제
+    
+    월요일 01시에 실행 순서:
+    1. 모든 등록된 과제들 최종 갱신 (링크제출, 문제풀이, 문제집, 모의테스트)
+    2. 전체과제현황 갱신
+    3. 모든 과제 및 전체과제현황 삭제
+    """
     global _bot_for_group_weekly
     if not _bot_for_group_weekly:
         return
@@ -694,16 +700,114 @@ async def all_assignment_auto_create():
     if now.weekday() != 0 or now.hour != 1 or now.minute != 0:
         return
     
-    # 먼저 기존 전체과제현황 삭제 (종료된 것들)
-    from common.database import get_all_group_all_assignment_status, delete_group_all_assignment_status
-    all_statuses = get_all_group_all_assignment_status()
-    for status in all_statuses:
+    logger.info("[월요일 01시] 모든 과제 최종 갱신 시작")
+    
+    # 1. 모든 등록된 과제들 최종 갱신
+    from common.database import (
+        get_all_group_link_submission_status, get_all_group_weekly_status,
+        get_all_group_problem_set_status, get_all_group_mock_test_status
+    )
+    from domain.link_submission import update_link_submission_status
+    from domain.problem_set import update_problem_set_status, update_mock_test_status
+    
+    # 링크제출 최종 갱신
+    for info in get_all_group_link_submission_status():
+        week_start = datetime.fromisoformat(info['week_start'])
+        week_end = datetime.fromisoformat(info['week_end'])
+        week_start = ensure_kst(week_start)
+        week_end = ensure_kst(week_end)
+        if week_start <= now <= week_end + timedelta(minutes=5):
+            logger.info(f"[월요일 01시] 링크제출 최종 갱신: {info['group_name']}")
+            await update_link_submission_status(info['group_name'], _bot_for_group_weekly)
+    
+    # 문제풀이 최종 갱신
+    for info in get_all_group_weekly_status():
+        week_start = datetime.fromisoformat(info['week_start'])
+        week_end = datetime.fromisoformat(info['week_end'])
+        week_start = ensure_kst(week_start)
+        week_end = ensure_kst(week_end)
+        if week_start <= now <= week_end + timedelta(minutes=5):
+            logger.info(f"[월요일 01시] 문제풀이 최종 갱신: {info['group_name']}")
+            await update_group_weekly_status(info['group_name'], _bot_for_group_weekly)
+    
+    # 문제집 최종 갱신
+    for info in get_all_group_problem_set_status():
+        week_start = datetime.fromisoformat(info['week_start'])
+        week_end = datetime.fromisoformat(info['week_end'])
+        week_start = ensure_kst(week_start)
+        week_end = ensure_kst(week_end)
+        if week_start <= now <= week_end + timedelta(minutes=5):
+            logger.info(f"[월요일 01시] 문제집 최종 갱신: {info['group_name']} - {info['problem_set_name']}")
+            await update_problem_set_status(info['group_name'], info['problem_set_name'], _bot_for_group_weekly)
+    
+    # 모의테스트 최종 갱신
+    for info in get_all_group_mock_test_status():
+        week_start = datetime.fromisoformat(info['week_start'])
+        week_end = datetime.fromisoformat(info['week_end'])
+        week_start = ensure_kst(week_start)
+        week_end = ensure_kst(week_end)
+        if week_start <= now <= week_end + timedelta(minutes=5):
+            logger.info(f"[월요일 01시] 모의테스트 최종 갱신: {info['group_name']} - {info['mock_test_name']}")
+            await update_mock_test_status(info['group_name'], info['mock_test_name'], _bot_for_group_weekly)
+    
+    # 2. 전체과제현황 갱신
+    from common.database import get_all_group_all_assignment_status
+    all_assignment_statuses = get_all_group_all_assignment_status()
+    for status in all_assignment_statuses:
+        week_start = datetime.fromisoformat(status['week_start'])
+        week_end = datetime.fromisoformat(status['week_end'])
+        week_start = ensure_kst(week_start)
+        week_end = ensure_kst(week_end)
+        if week_start <= now <= week_end + timedelta(minutes=5):
+            logger.info(f"[월요일 01시] 전체과제현황 최종 갱신: {status['group_name']}")
+            await update_all_assignment_status(status['group_name'], _bot_for_group_weekly, assignment_type=None)
+    
+    # 3. 모든 과제 및 전체과제현황 삭제
+    from common.database import (
+        delete_group_link_submission_status, delete_group_weekly_status,
+        delete_group_problem_set_status, delete_group_mock_test_status,
+        delete_group_all_assignment_status
+    )
+    
+    # 링크제출 삭제
+    for info in get_all_group_link_submission_status():
+        week_end = datetime.fromisoformat(info['week_end'])
+        week_end = ensure_kst(week_end)
+        if now >= week_end:
+            delete_group_link_submission_status(info['group_name'])
+            logger.info(f"[월요일 01시] 링크제출 삭제: {info['group_name']}")
+    
+    # 문제풀이 삭제
+    for info in get_all_group_weekly_status():
+        week_end = datetime.fromisoformat(info['week_end'])
+        week_end = ensure_kst(week_end)
+        if now >= week_end:
+            delete_group_weekly_status(info['group_name'])
+            logger.info(f"[월요일 01시] 문제풀이 삭제: {info['group_name']}")
+    
+    # 문제집 삭제
+    for info in get_all_group_problem_set_status():
+        week_end = datetime.fromisoformat(info['week_end'])
+        week_end = ensure_kst(week_end)
+        if now >= week_end:
+            delete_group_problem_set_status(info['group_name'], info['problem_set_name'])
+            logger.info(f"[월요일 01시] 문제집 삭제: {info['group_name']} - {info['problem_set_name']}")
+    
+    # 모의테스트 삭제
+    for info in get_all_group_mock_test_status():
+        week_end = datetime.fromisoformat(info['week_end'])
+        week_end = ensure_kst(week_end)
+        if now >= week_end:
+            delete_group_mock_test_status(info['group_name'], info['mock_test_name'])
+            logger.info(f"[월요일 01시] 모의테스트 삭제: {info['group_name']} - {info['mock_test_name']}")
+    
+    # 전체과제현황 삭제
+    for status in all_assignment_statuses:
         week_end = datetime.fromisoformat(status['week_end'])
         week_end = ensure_kst(week_end)
-        # 기간이 종료된 경우 삭제
-        if now > week_end + timedelta(minutes=5):
+        if now >= week_end:
             delete_group_all_assignment_status(status['group_name'])
-            logger.info(f"[전체과제현황] {status['group_name']} - 기간 종료로 삭제")
+            logger.info(f"[월요일 01시] 전체과제현황 삭제: {status['group_name']}")
     
     data = load_data()
     studies = data.get('studies', {})
@@ -1273,9 +1377,9 @@ def setup(bot):
     @group_assignment_create_group.command(name='모의테스트')
     @commands.has_permissions(administrator=True)
     async def group_assignment_create_mock_test(ctx, group_name: str, mock_test_name: str, channel: discord.TextChannel = None):
-        """그룹 모의테스트 과제 생성 (관리자 전용)
-        - 해당 채널에 고정 메시지 1개 생성
-        - 월요일 00시 ~ 다음 주 월요일 01시까지 정각 자동 갱신 + 수동 버튼 갱신
+        """그룹 모의테스트 과제 할당 (관리자 전용)
+        - 별도 메시지 생성 없이 DB에만 저장
+        - 월요일 01시에 체크 후 전체과제현황 갱신
         
         사용법: /그룹 과제 생성 모의테스트 [그룹명] [모의테스트명] [채널링크(선택)]
         예시: /그룹 과제 생성 모의테스트 21기-기초 2024-기말모의고사 #과제현황
@@ -1323,55 +1427,24 @@ def setup(bot):
         problem_ids = mock_test['problem_ids'] if isinstance(mock_test['problem_ids'], list) else [int(x) for x in str(mock_test['problem_ids']).split(',') if x.strip()]
         total_problems = len(problem_ids)
         
-        # 초기 임베드
-        embed = discord.Embed(
-            title=f"📝 '{mock_test_name}' 모의테스트 과제",
-            description=(
-                f"**그룹:** {group_name}\n"
-                f"**전체 문제 수:** {total_problems}개\n"
-                f"**기간:** {week_start.strftime('%Y-%m-%d')} ~ {week_end.strftime('%Y-%m-%d %H:%M')}\n"
-                f"**마지막 갱신:** -"
-            ),
-            color=discord.Color.blue(),
-        )
-        
-        # View 생성 (갱신 버튼 포함)
-        from domain.problem_set import MockTestStatusView
-        view = MockTestStatusView(group_name, mock_test_name)
-        
-        # 지정된 채널에 메시지 전송
-        msg = await target_channel.send(embed=embed, view=view)
-        
-        # DB에 저장
+        # DB에만 저장 (메시지는 생성하지 않음)
+        # 채널과 메시지 ID는 None으로 저장 (월요일 01시에만 체크)
         save_group_mock_test_status(
             group_name,
             mock_test_name,
             role_name,
-            str(target_channel.id),
-            str(msg.id),
+            str(target_channel.id),  # 채널은 저장하되 메시지는 생성하지 않음
+            "",  # 메시지 ID 없음
             week_start.isoformat(),
             week_end.isoformat(),
         )
         
-        # 즉시 1회 갱신
-        await update_mock_test_status(group_name, mock_test_name, ctx.bot)
-        
-        # 봇 알림 채널에 알림 전송
-        from common.utils import send_bot_notification
-        await send_bot_notification(
-            ctx.guild,
-            "📝 모의테스트 과제 생성",
+        await ctx.send(
+            f"✅ 모의테스트 정보와 실행 예약 시간이 예약되었습니다.\n"
             f"**그룹:** {group_name}\n"
             f"**모의테스트:** {mock_test_name}\n"
-            f"**채널:** {target_channel.mention}\n"
-            f"**기간:** {week_start.strftime('%Y-%m-%d')} ~ {week_end.strftime('%Y-%m-%d %H:%M')}\n"
-            f"**생성자:** {ctx.author.mention}",
-            discord.Color.green()
-        )
-        
-        await ctx.send(
-            f"✅ '{group_name}' 그룹의 '{mock_test_name}' 모의테스트 과제가 {target_channel.mention}에 설정되었습니다.\n"
-            f"📅 매시 정각 자동 갱신, 버튼으로 수동 갱신 가능합니다."
+            f"**문제 수:** {total_problems}개\n"
+            f"**실행 예약:** 월요일 01:00 KST"
         )
 
     @group_assignment_group.command(name='갱신')

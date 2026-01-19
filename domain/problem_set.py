@@ -226,13 +226,11 @@ async def update_problem_set_status(group_name: str, problem_set_name: str, bot_
 
 
 async def update_mock_test_status(group_name: str, mock_test_name: str, bot_instance):
-    """모의테스트 과제 현황 메시지 갱신"""
+    """모의테스트 과제 현황 갱신 (월요일 01시에만 실행, 메시지 생성 없음)"""
     status_info = get_group_mock_test_status(group_name, mock_test_name)
     if not status_info:
         return
     
-    channel_id = int(status_info['channel_id'])
-    message_id = int(status_info['message_id'])
     role_name = status_info['role_name']
     week_start = datetime.fromisoformat(status_info['week_start'])
     week_end = datetime.fromisoformat(status_info['week_end'])
@@ -246,6 +244,15 @@ async def update_mock_test_status(group_name: str, mock_test_name: str, bot_inst
     if not (week_start <= now <= week_end + timedelta(minutes=5)):
         return
     
+    # 메시지 ID가 없으면 메시지 생성 없이 바로 진행 (할당만 된 경우)
+    message_id = status_info.get('message_id')
+    if not message_id:
+        # 메시지가 없으므로 바로 전체과제현황만 갱신
+        from domain.channel import update_all_assignment_status
+        await update_all_assignment_status(group_name, bot_instance, assignment_type=f"모의테스트:{mock_test_name}")
+        return
+    
+    channel_id = int(status_info['channel_id'])
     channel = bot_instance.get_channel(channel_id)
     if not channel:
         return
@@ -425,20 +432,8 @@ async def problem_set_auto_update():
         week_start = ensure_kst(week_start)
         week_end = ensure_kst(week_end)
         
-        # 월요일 01시 정각이면 마지막 크롤링 후 DB 삭제
+        # 월요일 01시는 all_assignment_auto_create에서 처리하므로 여기서는 건너뜀
         if now.weekday() == 0 and now.hour == 1 and now.minute == 0:
-            await update_problem_set_status(info['group_name'], info['problem_set_name'], _bot_for_problem_set)
-            # DB에서 삭제
-            delete_group_problem_set_status(info['group_name'], info['problem_set_name'])
-            # 봇 알림 채널에 알림 전송
-            await send_bot_notification(
-                _bot_for_problem_set.get_guild(int(info.get('guild_id', 0)) or None),
-                "🗑️ 문제집 과제 종료",
-                f"**그룹:** {info['group_name']}\n"
-                f"**문제집:** {info['problem_set_name']}\n"
-                f"**기간 종료:** {week_end.strftime('%Y-%m-%d %H:%M')}",
-                discord.Color.orange()
-            )
             continue
         
         # 기간 내에만 갱신
@@ -468,18 +463,10 @@ async def mock_test_auto_update():
         
         # 기간 내에만 갱신 (월요일 01시 정각은 마지막 크롤링 허용)
         if week_start <= now <= week_end + timedelta(minutes=5):
+            # 모의테스트 현황 갱신 (전체과제현황도 함께 갱신됨)
             await update_mock_test_status(info['group_name'], info['mock_test_name'], _bot_for_mock_test)
             # DB에서 삭제
             delete_group_mock_test_status(info['group_name'], info['mock_test_name'])
-            # 봇 알림 채널에 알림 전송
-            await send_bot_notification(
-                _bot_for_mock_test.get_guild(int(info.get('guild_id', 0)) or None),
-                "🗑️ 모의테스트 과제 종료",
-                f"**그룹:** {info['group_name']}\n"
-                f"**모의테스트:** {info['mock_test_name']}\n"
-                f"**기간 종료:** {week_end.strftime('%Y-%m-%d %H:%M')}",
-                discord.Color.orange()
-            )
 
 
 class ProblemSetStatusView(discord.ui.View):
