@@ -537,8 +537,36 @@ async def update_all_assignment_status(group_name: str, bot_instance, assignment
             inline=False
         )
     else:
-        # 헤더 생성
-        header = "ID | " + " | ".join(assignment_columns)
+        # 각 컬럼의 최대 너비 계산
+        col_widths = {}
+        
+        # ID 컬럼 너비 계산
+        max_id_width = 0
+        for user_id, user_info in user_map.items():
+            boj_handle = user_info.get('boj_handle')
+            if boj_handle:
+                id_display = boj_handle
+            else:
+                id_display = user_info['username'][:15]
+            max_id_width = max(max_id_width, len(id_display))
+        col_widths['ID'] = max(max_id_width, 10)  # 최소 10자
+        
+        # 각 과제 컬럼의 최대 너비 계산
+        for col in assignment_columns:
+            max_col_width = len(col)
+            for user_id in user_map.keys():
+                status = user_status_map[user_id].get(col, "-")
+                max_col_width = max(max_col_width, len(str(status)))
+            col_widths[col] = max(max_col_width, 8)  # 최소 8자
+        
+        # 헤더 생성 (코드 블록 사용)
+        header_parts = [f"{'ID':<{col_widths['ID']}}"]
+        for col in assignment_columns:
+            header_parts.append(f"{col:<{col_widths[col]}}")
+        header = "  ".join(header_parts)
+        
+        # 구분선 생성
+        separator = "─" * len(header)
         
         # 각 멤버별 행 생성
         table_rows = []
@@ -552,31 +580,34 @@ async def update_all_assignment_status(group_name: str, bot_instance, assignment
             else:
                 user_id_display = username[:15]  # 최대 15자로 제한
             
-            row_values = [user_id_display]
+            row_parts = [f"{user_id_display:<{col_widths['ID']}}"]
             for col in assignment_columns:
                 status = user_status_map[user_id].get(col, "-")
-                row_values.append(status)
+                row_parts.append(f"{str(status):<{col_widths[col]}}")
             
-            table_rows.append(" | ".join(row_values))
+            table_rows.append("  ".join(row_parts))
         
-        # 표 생성 (헤더 + 구분선 + 행들)
-        table_text = header + "\n" + "-" * len(header) + "\n" + "\n".join(table_rows)
+        # 표 생성 (코드 블록으로 감싸기)
+        table_text = f"```\n{header}\n{separator}\n" + "\n".join(table_rows) + "\n```"
         
         # Discord 필드 제한(1024자) 처리
         if len(table_text) > 1024:
             # 여러 필드로 나누기
             chunk_size = 1000
             chunks = []
-            current_chunk = header + "\n" + "-" * len(header) + "\n"
+            current_chunk = f"```\n{header}\n{separator}\n"
             
             for row in table_rows:
-                if len(current_chunk) + len(row) + 1 > chunk_size:
+                if len(current_chunk) + len(row) + 3 > chunk_size:  # +3 for "\n```"
+                    current_chunk += "```"
                     chunks.append(current_chunk)
-                    current_chunk = row + "\n"
+                    current_chunk = f"```\n{header}\n{separator}\n{row}\n"
                 else:
                     current_chunk += row + "\n"
             
             if current_chunk:
+                if not current_chunk.endswith("```"):
+                    current_chunk += "```"
                 chunks.append(current_chunk)
             
             for i, chunk in enumerate(chunks):
