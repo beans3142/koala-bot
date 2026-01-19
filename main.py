@@ -39,13 +39,10 @@ class KoalaBot(commands.Bot):
         from domain.role import register_persistent_view
         from domain.channel import register_group_weekly_views
         from domain.link_submission import register_link_submission_views
-        from domain.problem_set import register_problem_set_views, register_mock_test_views
 
         register_persistent_view(self)
         register_group_weekly_views(self)
         register_link_submission_views(self)
-        register_problem_set_views(self)
-        register_mock_test_views(self)
         print("[OK] Persistent views 등록 완료")
 
 

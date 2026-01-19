@@ -615,17 +615,6 @@ class MockTestStatusView(discord.ui.View):
         await interaction.followup.send("✅ 모의테스트 과제 현황이 갱신되었습니다.", ephemeral=True)
 
 
-def register_problem_set_views(bot):
-    """봇 재시작 후에도 문제집 과제 버튼이 작동하도록 persistent view 등록"""
-    try:
-        # ProblemSetStatusView 등록 (custom_id는 고정되어 있음)
-        # 실제 그룹명과 문제집명은 메시지 ID로 찾음
-        bot.add_view(ProblemSetStatusView("", ""))  # 빈 값으로 초기화, 실제 값은 메시지에서 찾음
-        print(f"[OK] 문제집 과제 persistent view 등록 완료 (custom_id: problem_set_status_refresh)")
-    except Exception as e:
-        print(f"[ERROR] 문제집 과제 persistent view 등록 실패: {e}")
-
-
 def setup(bot):
     """봇에 명령어 등록"""
     global _bot_for_problem_set
