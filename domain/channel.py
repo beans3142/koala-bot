@@ -242,7 +242,7 @@ async def update_group_weekly_status(group_name: str, bot_instance):
     await message.edit(embed=embed, view=GroupWeeklyStatusView())
     
     # 전체과제현황도 갱신 (문제풀이 부분만)
-    await update_all_assignment_status(group_name, _bot_for_group_weekly, assignment_type="문제풀이")
+    await update_all_assignment_status(group_name, bot_instance, assignment_type="문제풀이")
 
 
 async def update_all_assignment_status(group_name: str, bot_instance, assignment_type: str = None):
@@ -1064,7 +1064,12 @@ class AllAssignmentStatusView(discord.ui.View):
             await interaction.response.defer(ephemeral=True)
         
         # 문제풀이 갱신 (자동으로 전체과제현황도 갱신됨)
-        await update_group_weekly_status(info['group_name'], interaction.client)
+        bot_instance = interaction.client
+        if not bot_instance:
+            await interaction.followup.send("❌ 봇 인스턴스를 찾을 수 없습니다.", ephemeral=True)
+            return
+        
+        await update_group_weekly_status(info['group_name'], bot_instance)
         await interaction.followup.send("✅ 문제풀이 현황이 갱신되었습니다.", ephemeral=True)
 
     async def refresh_link_button(self, interaction: discord.Interaction):
@@ -1093,8 +1098,12 @@ class AllAssignmentStatusView(discord.ui.View):
             await interaction.response.defer(ephemeral=True)
         
         # 링크제출 갱신 (자동으로 전체과제현황도 갱신됨)
+        bot_instance = interaction.client
+        if not bot_instance:
+            await interaction.followup.send("❌ 봇 인스턴스를 찾을 수 없습니다.", ephemeral=True)
+            return
         from domain.link_submission import update_link_submission_status
-        await update_link_submission_status(info['group_name'], interaction.client)
+        await update_link_submission_status(info['group_name'], bot_instance)
         await interaction.followup.send("✅ 링크제출 현황이 갱신되었습니다.", ephemeral=True)
 
     async def refresh_problem_set_button(self, interaction: discord.Interaction):
@@ -1123,6 +1132,10 @@ class AllAssignmentStatusView(discord.ui.View):
             await interaction.response.defer(ephemeral=True)
         
         # 문제집 갱신 (모든 문제집 갱신)
+        bot_instance = interaction.client
+        if not bot_instance:
+            await interaction.followup.send("❌ 봇 인스턴스를 찾을 수 없습니다.", ephemeral=True)
+            return
         from domain.problem_set import get_all_group_problem_set_status, update_problem_set_status
         problem_set_statuses = [ps for ps in get_all_group_problem_set_status() if ps['group_name'] == info['group_name']]
         
@@ -1134,7 +1147,7 @@ class AllAssignmentStatusView(discord.ui.View):
             ps_week_end = ensure_kst(ps_week_end)
             
             if ps_week_start <= now <= ps_week_end:
-                await update_problem_set_status(info['group_name'], ps_status['problem_set_name'], interaction.client)
+                await update_problem_set_status(info['group_name'], ps_status['problem_set_name'], bot_instance)
                 updated_count += 1
         
         if updated_count > 0:
@@ -1168,6 +1181,10 @@ class AllAssignmentStatusView(discord.ui.View):
             await interaction.response.defer(ephemeral=True)
         
         # 모의테스트 갱신 (모든 모의테스트 갱신)
+        bot_instance = interaction.client
+        if not bot_instance:
+            await interaction.followup.send("❌ 봇 인스턴스를 찾을 수 없습니다.", ephemeral=True)
+            return
         from domain.problem_set import get_all_group_mock_test_status, update_mock_test_status
         mock_test_statuses = [mt for mt in get_all_group_mock_test_status() if mt['group_name'] == info['group_name']]
         
@@ -1179,7 +1196,7 @@ class AllAssignmentStatusView(discord.ui.View):
             mt_week_end = ensure_kst(mt_week_end)
             
             if mt_week_start <= now <= mt_week_end:
-                await update_mock_test_status(info['group_name'], mt_status['mock_test_name'], interaction.client)
+                await update_mock_test_status(info['group_name'], mt_status['mock_test_name'], bot_instance)
                 updated_count += 1
         
         if updated_count > 0:
@@ -1465,6 +1482,9 @@ def setup(bot):
 
         # 즉시 1회 갱신
         await update_link_submission_status(group_name, ctx.bot)
+
+        # 전체과제현황이 이미 있으면 즉시 반영 (버튼/컬럼 포함)
+        await update_all_assignment_status(group_name, ctx.bot, assignment_type=None)
         
         # 봇 알림 채널에 알림 전송
         from common.utils import send_bot_notification
@@ -1543,6 +1563,9 @@ def setup(bot):
 
         # 즉시 1회 갱신
         await update_group_weekly_status(group_name, ctx.bot)
+
+        # 전체과제현황이 이미 있으면 즉시 반영 (버튼/컬럼 포함)
+        await update_all_assignment_status(group_name, ctx.bot, assignment_type=None)
         
         # 봇 알림 채널에 알림 전송
         from common.utils import send_bot_notification
@@ -1643,6 +1666,12 @@ def setup(bot):
             week_start.isoformat(),
             week_end.isoformat(),
         )
+
+        # 즉시 1회 갱신
+        await update_problem_set_status(group_name, problem_set_name, ctx.bot)
+
+        # 전체과제현황이 이미 있으면 즉시 반영 (버튼/컬럼 포함)
+        await update_all_assignment_status(group_name, ctx.bot, assignment_type=None)
         
         # 즉시 1회 갱신
         await update_problem_set_status(group_name, problem_set_name, ctx.bot)
@@ -1729,6 +1758,9 @@ def setup(bot):
             week_start.isoformat(),
             week_end.isoformat(),
         )
+
+        # 전체과제현황이 이미 있으면 즉시 반영 (버튼/컬럼 포함)
+        await update_all_assignment_status(group_name, ctx.bot, assignment_type=None)
         
         await ctx.send(
             f"✅ 모의테스트 정보와 실행 예약 시간이 예약되었습니다.\n"
@@ -1833,6 +1865,9 @@ def setup(bot):
                 f"✅ '{group_name}' 그룹의 '{problem_set_name}' 문제집 과제 정보가 삭제되었습니다.\n"
                 f"📝 메시지는 {channel_name}에 그대로 남아있습니다."
             )
+
+            # 전체과제현황이 있으면 즉시 반영 (버튼/컬럼 포함)
+            await update_all_assignment_status(group_name, ctx.bot, assignment_type=None)
             return
         
         # 모의테스트의 경우 args에서 그룹명과 모의테스트명 파싱
@@ -1868,6 +1903,9 @@ def setup(bot):
                 f"✅ '{group_name}' 그룹의 '{mock_test_name}' 모의테스트 과제 정보가 삭제되었습니다.\n"
                 f"📝 메시지는 {channel_name}에 그대로 남아있습니다."
             )
+
+            # 전체과제현황이 있으면 즉시 반영 (버튼/컬럼 포함)
+            await update_all_assignment_status(group_name, ctx.bot, assignment_type=None)
             return
         
         # 링크제출, 문제풀이의 경우 기존 로직
@@ -1899,6 +1937,9 @@ def setup(bot):
                 f"✅ '{group_name}' 그룹의 링크 제출 메시지 정보 및 제출 데이터가 삭제되었습니다.\n"
                 f"📝 메시지는 {channel_name}에 그대로 남아있습니다."
             )
+
+            # 전체과제현황이 있으면 즉시 반영 (버튼/컬럼 포함)
+            await update_all_assignment_status(group_name, ctx.bot, assignment_type=None)
         elif assignment_type == '문제풀이':
             info = get_group_weekly_status(group_name)
             if not info:
@@ -1911,6 +1952,9 @@ def setup(bot):
                 f"✅ '{group_name}' 그룹의 주간 현황 메시지 정보가 삭제되었습니다.\n"
                 f"📝 메시지는 {channel_name}에 그대로 남아있습니다."
             )
+
+            # 전체과제현황이 있으면 즉시 반영 (버튼/컬럼 포함)
+            await update_all_assignment_status(group_name, ctx.bot, assignment_type=None)
 
     @group_assignment_group.command(name='목록')
     @commands.has_permissions(administrator=True)
