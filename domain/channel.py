@@ -1142,6 +1142,51 @@ class AllAssignmentStatusView(discord.ui.View):
         else:
             await interaction.followup.send("⚠️ 갱신 가능한 문제집이 없습니다.", ephemeral=True)
 
+    async def refresh_mock_test_button(self, interaction: discord.Interaction):
+        info = get_group_all_assignment_status_by_message(str(interaction.channel.id), str(interaction.message.id))
+        if not info:
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ 이 메시지는 전체과제현황으로 등록되어 있지 않습니다.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ 이 메시지는 전체과제현황으로 등록되어 있지 않습니다.", ephemeral=True)
+            return
+
+        week_start = datetime.fromisoformat(info['week_start'])
+        week_end = datetime.fromisoformat(info['week_end'])
+        week_start = ensure_kst(week_start)
+        week_end = ensure_kst(week_end)
+        now = get_kst_now()
+
+        if not (week_start <= now <= week_end + timedelta(minutes=5)):
+            if interaction.response.is_done():
+                await interaction.followup.send("⚠️ 이 메시지의 기간이 종료되어 더 이상 갱신할 수 없습니다.", ephemeral=True)
+            else:
+                await interaction.response.send_message("⚠️ 이 메시지의 기간이 종료되어 더 이상 갱신할 수 없습니다.", ephemeral=True)
+            return
+
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+        
+        # 모의테스트 갱신 (모든 모의테스트 갱신)
+        from domain.problem_set import get_all_group_mock_test_status, update_mock_test_status
+        mock_test_statuses = [mt for mt in get_all_group_mock_test_status() if mt['group_name'] == info['group_name']]
+        
+        updated_count = 0
+        for mt_status in mock_test_statuses:
+            mt_week_start = datetime.fromisoformat(mt_status['week_start'])
+            mt_week_end = datetime.fromisoformat(mt_status['week_end'])
+            mt_week_start = ensure_kst(mt_week_start)
+            mt_week_end = ensure_kst(mt_week_end)
+            
+            if mt_week_start <= now <= mt_week_end:
+                await update_mock_test_status(info['group_name'], mt_status['mock_test_name'], interaction.client)
+                updated_count += 1
+        
+        if updated_count > 0:
+            await interaction.followup.send(f"✅ 모의테스트 현황 {updated_count}개가 갱신되었습니다.", ephemeral=True)
+        else:
+            await interaction.followup.send("⚠️ 갱신 가능한 모의테스트가 없습니다.", ephemeral=True)
+
 
 class GroupWeeklyStatusView(discord.ui.View):
     """그룹 주간 현황 수동 갱신 버튼 View (persistent)"""
