@@ -861,6 +861,19 @@ def get_group_all_assignment_status(group_name: str) -> Optional[Dict]:
         return dict(row)
     return None
 
+def get_group_all_assignment_status_by_message(channel_id: str, message_id: str) -> Optional[Dict]:
+    """메시지 기준으로 전체과제현황 가져오기"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM group_all_assignment_status WHERE channel_id = ? AND message_id = ?', (channel_id, message_id))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if row:
+        return dict(row)
+    return None
+
 def get_all_group_all_assignment_status() -> List[Dict]:
     """모든 전체과제현황 메시지 목록 가져오기"""
     conn = get_connection()

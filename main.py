@@ -37,12 +37,13 @@ class KoalaBot(commands.Bot):
         persistent view 등록은 여기서 해야 'no running event loop'가 나지 않음.
         """
         from domain.role import register_persistent_view
-        from domain.channel import register_group_weekly_views
+        from domain.channel import register_group_weekly_views, register_all_assignment_status_views
         from domain.link_submission import register_link_submission_views
 
         register_persistent_view(self)
         register_group_weekly_views(self)
         register_link_submission_views(self)
+        register_all_assignment_status_views(self)
         print("[OK] Persistent views 등록 완료")
 
 

@@ -191,6 +191,78 @@ async def get_user_solved_problems_from_solved_ac(baekjoon_id: str, target_probl
         return []
 
 
+async def check_problems_individual_queries(baekjoon_id: str, target_problems: List[int], headers: dict) -> List[int]:
+    """
+    각 문제마다 개별 query를 날려서 해결 여부 확인
+    https://solved.ac/problems?query=s@{handle}+{problem_id}&page=1
+    
+    모의테스트처럼 문제 수가 적을 때 사용 (42페이지를 모두 조회할 필요 없음)
+    """
+    try:
+        import urllib.parse
+        
+        solved_problems = []
+        target_set = set(target_problems)
+        
+        logger.info(f"[개별 문제 확인] {baekjoon_id} - {len(target_problems)}개 문제 개별 확인 시작")
+        
+        async with aiohttp.ClientSession(headers=headers) as session:
+            for problem_id in target_problems:
+                # 각 문제마다 query: s@{handle}+{problem_id}
+                query = f"s@{baekjoon_id}+{problem_id}"
+                encoded_query = urllib.parse.quote(query)
+                url = f"https://solved.ac/problems?query={encoded_query}&page=1"
+                
+                try:
+                    async with session.get(url) as response:
+                        if response.status != 200:
+                            logger.debug(f"[개별 문제 확인] {baekjoon_id} - 문제 {problem_id}: HTTP {response.status}")
+                            await asyncio.sleep(0.2)
+                            continue
+                        
+                        html = await response.text()
+                        soup = BeautifulSoup(html, 'html.parser')
+                        
+                        # "해당하는 문제가 없습니다" 메시지 확인
+                        no_problems_text = soup.find(string=re.compile(r'해당하는 문제가 없습니다|문제가 없습니다'))
+                        if no_problems_text:
+                            logger.debug(f"[개별 문제 확인] {baekjoon_id} - 문제 {problem_id}: 미해결")
+                            await asyncio.sleep(0.2)
+                            continue
+                        
+                        # 문제 번호가 결과에 있는지 확인
+                        problem_links = soup.find_all('a', href=re.compile(r'(?:www\.)?acmicpc\.net/problem/\d+|/problem/\d+'))
+                        found = False
+                        for link in problem_links:
+                            href = link.get('href', '')
+                            match = re.search(r'(?:www\.)?acmicpc\.net/problem/(\d+)|/problem/(\d+)', href)
+                            if match:
+                                found_id = int(match.group(1) or match.group(2))
+                                if found_id == problem_id:
+                                    solved_problems.append(problem_id)
+                                    found = True
+                                    logger.debug(f"[개별 문제 확인] {baekjoon_id} - 문제 {problem_id}: 해결됨")
+                                    break
+                        
+                        if not found:
+                            logger.debug(f"[개별 문제 확인] {baekjoon_id} - 문제 {problem_id}: 미해결")
+                        
+                        await asyncio.sleep(0.2)  # Rate limiting 방지
+                        
+                except Exception as e:
+                    logger.error(f"[개별 문제 확인] {baekjoon_id} - 문제 {problem_id} 확인 중 오류: {e}")
+                    await asyncio.sleep(0.2)
+                    continue
+        
+        solved_problems = sorted(list(set(solved_problems)))
+        logger.info(f"[개별 문제 확인] {baekjoon_id} - {len(solved_problems)}/{len(target_problems)}개 해결")
+        return solved_problems
+        
+    except Exception as e:
+        logger.error(f"[개별 문제 확인] 오류: {e}", exc_info=True)
+        return []
+
+
 async def _check_problems_via_search_api(baekjoon_id: str, target_problems: List[int], headers: dict) -> List[int]:
     """
     solved.ac 문제 검색 API를 사용하여 사용자가 푼 모든 문제를 페이지네이션으로 확인

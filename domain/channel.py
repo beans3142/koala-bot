@@ -22,6 +22,7 @@ from common.database import (
     delete_group_mock_test_status,
     save_group_all_assignment_status,
     get_group_all_assignment_status,
+    get_group_all_assignment_status_by_message,
     get_all_group_all_assignment_status,
     delete_group_all_assignment_status,
     get_group_link_submission_status,
@@ -240,12 +241,19 @@ async def update_group_weekly_status(group_name: str, bot_instance):
 
     await message.edit(embed=embed, view=GroupWeeklyStatusView())
     
-    # 전체과제현황도 갱신
-    await update_all_assignment_status(group_name, _bot_for_group_weekly)
+    # 전체과제현황도 갱신 (문제풀이 부분만)
+    await update_all_assignment_status(group_name, _bot_for_group_weekly, assignment_type="문제풀이")
 
 
-async def update_all_assignment_status(group_name: str, bot_instance):
-    """전체과제현황 메시지 갱신 - 모든 과제의 상세 정보를 합쳐서 표시"""
+async def update_all_assignment_status(group_name: str, bot_instance, assignment_type: str = None):
+    """
+    전체과제현황 메시지 갱신 - 모든 과제의 상세 정보를 합쳐서 표시
+    
+    Args:
+        group_name: 그룹명
+        bot_instance: 봇 인스턴스
+        assignment_type: 갱신할 과제 타입 (None이면 전체 갱신, "문제풀이", "링크제출", "문제집:{name}", "모의테스트:{name}" 등)
+    """
     status_info = get_group_all_assignment_status(group_name)
     if not status_info:
         return
@@ -294,12 +302,15 @@ async def update_all_assignment_status(group_name: str, bot_instance):
     
     # 필요한 import
     from common.database import get_link_submissions
-    from common.boj_utils import get_weekly_solved_count, get_user_solved_problems_from_solved_ac
+    from common.boj_utils import get_weekly_solved_count, get_user_solved_problems_from_solved_ac, check_problems_individual_queries
     from domain.problem_set import get_problem_set, get_mock_test
     from common.logger import get_logger
     logger = get_logger()
     
     guild = channel.guild if channel else None
+    
+    # 갱신 버튼 추가
+    view = AllAssignmentStatusView()
     
     # 모든 멤버 수집 (역할 기준)
     role_name = status_info['role_name']
@@ -310,7 +321,7 @@ async def update_all_assignment_status(group_name: str, bot_instance):
             value="멤버가 없습니다.",
             inline=False
         )
-        await message.edit(embed=embed)
+        await message.edit(embed=embed, view=view)
         save_group_all_assignment_status(
             group_name,
             status_info['role_name'],
@@ -340,12 +351,58 @@ async def update_all_assignment_status(group_name: str, bot_instance):
             'boj_handle': boj_handle,
         }
     
+    # 기존 메시지의 embed를 읽어서 현재 상태 복원 (부분 갱신을 위해)
+    existing_user_status_map = {user_id: {} for user_id in user_map.keys()}
+    existing_assignment_columns = []
+    
+    if assignment_type:
+        # 부분 갱신: 기존 메시지의 embed를 읽어서 현재 상태 복원
+        try:
+            existing_embed = message.embeds[0] if message.embeds else None
+            if existing_embed:
+                # 기존 embed의 필드에서 표 정보 추출
+                for field in existing_embed.fields:
+                    if field.name.startswith("과제 현황"):
+                        # 표 파싱 (헤더에서 컬럼 추출)
+                        value = field.value
+                        if value and "|" in value:
+                            lines = value.split("\n")
+                            if len(lines) >= 2:
+                                header_line = lines[0]
+                                if "ID |" in header_line:
+                                    # 헤더에서 컬럼 추출
+                                    header_parts = [p.strip() for p in header_line.split("|")]
+                                    if len(header_parts) > 1:
+                                        existing_assignment_columns = header_parts[1:]  # ID 제외
+                                        
+                                        # 각 행 파싱
+                                        for line in lines[2:]:  # 헤더와 구분선 제외
+                                            if "|" in line:
+                                                row_parts = [p.strip() for p in line.split("|")]
+                                                if len(row_parts) > 0:
+                                                    user_id_display = row_parts[0]
+                                                    # user_id_display로 user_id 찾기
+                                                    found_user_id = None
+                                                    for uid, uinfo in user_map.items():
+                                                        if uinfo.get('boj_handle') == user_id_display or uinfo['username'][:15] == user_id_display:
+                                                            found_user_id = uid
+                                                            break
+                                                    
+                                                    if found_user_id:
+                                                        for i, col in enumerate(existing_assignment_columns):
+                                                            if i + 1 < len(row_parts):
+                                                                existing_user_status_map[found_user_id][col] = row_parts[i + 1]
+        except Exception as e:
+            logger.error(f"기존 embed 파싱 오류: {e}", exc_info=True)
+            # 파싱 실패 시 전체 갱신으로 폴백
+            assignment_type = None
+    
     # 각 과제별 정보 수집 (표 형식)
-    assignment_columns = []
-    user_status_map = {user_id: {} for user_id in user_map.keys()}
+    assignment_columns = existing_assignment_columns.copy() if assignment_type and existing_assignment_columns else []
+    user_status_map = existing_user_status_map.copy() if assignment_type else {user_id: {} for user_id in user_map.keys()}
     
     # 링크제출 현황 (진행 중인 것만)
-    if link_status:
+    if link_status and (not assignment_type or assignment_type == "링크제출"):
         link_week_start = datetime.fromisoformat(link_status['week_start'])
         link_week_end = datetime.fromisoformat(link_status['week_end'])
         link_week_start = ensure_kst(link_week_start)
@@ -365,7 +422,7 @@ async def update_all_assignment_status(group_name: str, bot_instance):
                 user_status_map[user_id]["링크제출"] = "제출완료" if links else "미제출"
     
     # 문제풀이 현황 (진행 중인 것만)
-    if problem_status:
+    if problem_status and (not assignment_type or assignment_type == "문제풀이"):
         problem_week_start = datetime.fromisoformat(problem_status['week_start'])
         problem_week_end = datetime.fromisoformat(problem_status['week_end'])
         problem_week_start = ensure_kst(problem_week_start)
@@ -389,6 +446,8 @@ async def update_all_assignment_status(group_name: str, bot_instance):
     
     # 문제집 과제 현황 (진행 중인 것만)
     for ps_status in problem_set_statuses:
+        if assignment_type and not assignment_type.startswith("문제집:"):
+            continue
         ps_week_start = datetime.fromisoformat(ps_status['week_start'])
         ps_week_end = datetime.fromisoformat(ps_status['week_end'])
         ps_week_start = ensure_kst(ps_week_start)
@@ -396,12 +455,18 @@ async def update_all_assignment_status(group_name: str, bot_instance):
         
         if ps_week_start <= now <= ps_week_end:
             problem_set_name = ps_status['problem_set_name']
+            
+            # 부분 갱신: 해당 문제집만 갱신
+            if assignment_type and assignment_type != f"문제집:{problem_set_name}":
+                continue
+            
             problem_set = get_problem_set(problem_set_name)
             
             if not problem_set:
                 continue
             
-            assignment_columns.append(f"문제집:{problem_set_name}")
+            if f"문제집:{problem_set_name}" not in assignment_columns:
+                assignment_columns.append(f"문제집:{problem_set_name}")
             problem_ids = problem_set['problem_ids']
             total_problems = len(problem_ids)
             
@@ -423,6 +488,8 @@ async def update_all_assignment_status(group_name: str, bot_instance):
     
     # 모의테스트 과제 현황 (진행 중인 것만)
     for mt_status in mock_test_statuses:
+        if assignment_type and not assignment_type.startswith("모의테스트:"):
+            continue
         mt_week_start = datetime.fromisoformat(mt_status['week_start'])
         mt_week_end = datetime.fromisoformat(mt_status['week_end'])
         mt_week_start = ensure_kst(mt_week_start)
@@ -430,13 +497,20 @@ async def update_all_assignment_status(group_name: str, bot_instance):
         
         if mt_week_start <= now <= mt_week_end:
             mock_test_name = mt_status['mock_test_name']
+            
+            # 부분 갱신: 해당 모의테스트만 갱신
+            if assignment_type and assignment_type != f"모의테스트:{mock_test_name}":
+                continue
+            
             mock_test = get_mock_test(mock_test_name)
             
             if not mock_test:
                 continue
             
-            assignment_columns.append(f"모의테스트:{mock_test_name}")
-            problem_ids = [int(x) for x in mock_test['problem_ids'].split(',') if x.strip()]
+            if f"모의테스트:{mock_test_name}" not in assignment_columns:
+                assignment_columns.append(f"모의테스트:{mock_test_name}")
+            # 모의테스트 문제 목록 (get_mock_test가 이미 리스트로 반환함)
+            problem_ids = mock_test['problem_ids'] if isinstance(mock_test['problem_ids'], list) else [int(x) for x in str(mock_test['problem_ids']).split(',') if x.strip()]
             total_problems = len(problem_ids)
             
             for user_id, user_info in user_map.items():
@@ -518,7 +592,7 @@ async def update_all_assignment_status(group_name: str, bot_instance):
                 inline=False
             )
     
-    await message.edit(embed=embed)
+    await message.edit(embed=embed, view=view)
     
     # DB에 마지막 갱신 시간 저장
     save_group_all_assignment_status(
@@ -579,7 +653,7 @@ async def group_weekly_auto_update():
 
 @tasks.loop(time=[time(hour=1, minute=0)])
 async def all_assignment_auto_create():
-    """월요일 01시 정각 전체과제현황 자동 생성"""
+    """월요일 01시 정각 전체과제현황 자동 생성 및 삭제"""
     global _bot_for_group_weekly
     if not _bot_for_group_weekly:
         return
@@ -588,6 +662,17 @@ async def all_assignment_auto_create():
     # 월요일 01시에만 실행
     if now.weekday() != 0 or now.hour != 1 or now.minute != 0:
         return
+    
+    # 먼저 기존 전체과제현황 삭제 (종료된 것들)
+    from common.database import get_all_group_all_assignment_status, delete_group_all_assignment_status
+    all_statuses = get_all_group_all_assignment_status()
+    for status in all_statuses:
+        week_end = datetime.fromisoformat(status['week_end'])
+        week_end = ensure_kst(week_end)
+        # 기간이 종료된 경우 삭제
+        if now > week_end + timedelta(minutes=5):
+            delete_group_all_assignment_status(status['group_name'])
+            logger.info(f"[전체과제현황] {status['group_name']} - 기간 종료로 삭제")
     
     data = load_data()
     studies = data.get('studies', {})
@@ -663,10 +748,18 @@ async def all_assignment_auto_create():
             week_end.isoformat(),
         )
         
-        # 즉시 1회 갱신
-        await update_all_assignment_status(group_name, _bot_for_group_weekly)
+        # 즉시 1회 갱신 (전체)
+        await update_all_assignment_status(group_name, _bot_for_group_weekly, assignment_type=None)
         
         logger.info(f"[전체과제현황] {group_name} - 자동 생성 완료")
+
+
+class AllAssignmentStatusView(discord.ui.View):
+    """전체과제현황 View (persistent, 갱신 버튼 없음 - 직접 갱신 불가)"""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+        # 갱신 버튼 없음 - 직접 갱신 불가능, 부분 갱신만 가능
 
 
 class GroupWeeklyStatusView(discord.ui.View):
@@ -728,6 +821,14 @@ def register_group_weekly_views(bot):
         print(f"[OK] 그룹 주간 현황 persistent view 등록 완료 (custom_id: group_weekly_refresh)")
     except Exception as e:
         print(f"[ERROR] 그룹 주간 현황 persistent view 등록 실패: {e}")
+
+def register_all_assignment_status_views(bot):
+    """봇 재시작 후에도 전체과제현황 버튼이 작동하도록 persistent view 등록"""
+    try:
+        bot.add_view(AllAssignmentStatusView())
+        print(f"[OK] 전체과제현황 persistent view 등록 완료 (custom_id: all_assignment_status_refresh)")
+    except Exception as e:
+        print(f"[ERROR] 전체과제현황 persistent view 등록 실패: {e}")
 
 
 def start_group_weekly_scheduler(bot):
@@ -1271,15 +1372,37 @@ def setup(bot):
 
     @group_assignment_group.command(name='삭제')
     @commands.has_permissions(administrator=True)
-    async def group_assignment_delete(ctx, assignment_type: str, *, args: str):
+    async def group_assignment_delete(ctx, assignment_type: str, *, args: str = ""):
         """그룹 과제 삭제 (관리자 전용)
         
-        assignment_type: '링크제출', '문제풀이', '문제집', 또는 '모의테스트'
+        assignment_type: '링크제출', '문제풀이', '문제집', '모의테스트', 또는 '전체현황'
         - 문제집/모의테스트의 경우: '[유형] [그룹명] [이름]' 형식
+        - 전체현황의 경우: '전체현황 [그룹명]' 형식
         - DB에서 정보만 삭제 (메시지는 채널에 그대로 남음)
         """
-        if assignment_type not in ['링크제출', '문제풀이', '문제집', '모의테스트']:
-            await ctx.send("❌ 과제 유형은 '링크제출', '문제풀이', '문제집', 또는 '모의테스트'만 가능합니다.")
+        if assignment_type not in ['링크제출', '문제풀이', '문제집', '모의테스트', '전체현황']:
+            await ctx.send("❌ 과제 유형은 '링크제출', '문제풀이', '문제집', '모의테스트', 또는 '전체현황'만 가능합니다.")
+            return
+        
+        # 전체현황 삭제
+        if assignment_type == '전체현황':
+            if not args:
+                await ctx.send("❌ 전체현황 삭제는 `/그룹 과제 삭제 전체현황 [그룹명]` 형식으로 입력해주세요.")
+                return
+            
+            group_name = args.strip()
+            info = get_group_all_assignment_status(group_name)
+            if not info:
+                await ctx.send(f"❌ '{group_name}' 그룹의 전체과제현황을 찾을 수 없습니다.")
+                return
+            
+            delete_group_all_assignment_status(group_name)
+            channel = ctx.guild.get_channel(int(info['channel_id']))
+            channel_name = channel.mention if channel else f"<#{info['channel_id']}>"
+            await ctx.send(
+                f"✅ '{group_name}' 그룹의 전체과제현황 정보가 삭제되었습니다.\n"
+                f"📝 메시지는 {channel_name}에 그대로 남아있습니다."
+            )
             return
         
         # 문제집의 경우 args에서 그룹명과 문제집명 파싱
@@ -1579,6 +1702,100 @@ def setup(bot):
         
         embed.description = "\n\n".join(assignment_list) if assignment_list else "과제 없음"
         await ctx.send(embed=embed)
+
+    @group_assignment_group.command(name='전체현황')
+    @commands.has_permissions(administrator=True)
+    async def group_assignment_all_status(ctx, group_name: str, channel: discord.TextChannel = None):
+        """그룹 전체과제현황 표 형식으로 조회 (관리자 전용)
+        
+        특정 그룹의 모든 과제를 표 형식으로 보여줍니다.
+        채널이 지정되면 해당 채널에 표시하고, 지정되지 않으면 현재 채널에 표시합니다.
+        
+        사용법: /그룹 과제 전체현황 [그룹명] [채널링크(선택)]
+        예시: /그룹 과제 전체현황 21기-기초 #풀이현황
+        """
+        from common.database import (
+            get_group_all_assignment_status,
+            save_group_all_assignment_status,
+            get_group_link_submission_status,
+            get_group_weekly_status,
+            get_all_group_problem_set_status,
+            get_all_group_mock_test_status,
+        )
+        
+        data = load_data()
+        role_name = find_role_by_group_name(group_name, data)
+        if not role_name:
+            await ctx.send(
+                f"❌ '{group_name}' 그룹을 찾을 수 없습니다.\n💡 `/그룹 목록` 명령어로 등록된 그룹을 확인하세요."
+            )
+            return
+        
+        # 채널이 지정되지 않았으면 현재 채널 사용
+        target_channel = channel if channel else ctx.channel
+        
+        # 기준 주 계산 (명령어 실행일이 속한 주의 월요일 00시 ~ 다음 주 월요일 01시)
+        today = get_kst_now()
+        days_since_monday = today.weekday()  # 0=월요일
+        week_start = today - timedelta(days=days_since_monday)
+        week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
+        week_end = week_start + timedelta(days=7, hours=1)
+        
+        # 기존 전체과제현황 확인
+        existing_status = get_group_all_assignment_status(group_name)
+        
+        if existing_status:
+            # 기존 메시지가 있으면 갱신
+            await update_all_assignment_status(group_name, ctx.bot)
+            await ctx.send(f"✅ '{group_name}' 그룹의 전체과제현황이 갱신되었습니다.")
+        else:
+            # 기존 메시지가 없으면 새로 생성
+            # 과제가 하나라도 있는지 확인
+            link_status = get_group_link_submission_status(group_name)
+            problem_status = get_group_weekly_status(group_name)
+            all_problem_sets = get_all_group_problem_set_status()
+            problem_set_statuses = [ps for ps in all_problem_sets if ps['group_name'] == group_name]
+            all_mock_tests = get_all_group_mock_test_status()
+            mock_test_statuses = [mt for mt in all_mock_tests if mt['group_name'] == group_name]
+            
+            # 과제가 하나도 없으면 생성하지 않음
+            if not link_status and not problem_status and not problem_set_statuses and not mock_test_statuses:
+                await ctx.send(f"❌ '{group_name}' 그룹에 생성된 과제가 없습니다.")
+                return
+            
+            # 초기 임베드
+            embed = discord.Embed(
+                title=f"📋 '{group_name}' 전체 과제 현황",
+                description=(
+                    f"**기간:** {week_start.strftime('%Y-%m-%d')} ~ {week_end.strftime('%Y-%m-%d %H:%M')}\n"
+                    f"**마지막 갱신:** -"
+                ),
+                color=discord.Color.gold()
+            )
+            
+            # 갱신 버튼 추가
+            view = AllAssignmentStatusView()
+            
+            # 지정된 채널에 메시지 전송
+            msg = await target_channel.send(embed=embed, view=view)
+            
+            # DB에 저장
+            save_group_all_assignment_status(
+                group_name,
+                role_name,
+                str(target_channel.id),
+                str(msg.id),
+                week_start.isoformat(),
+                week_end.isoformat(),
+            )
+            
+            # 즉시 1회 갱신 (표 형식으로 표시)
+            await update_all_assignment_status(group_name, ctx.bot)
+            
+            await ctx.send(
+                f"✅ '{group_name}' 그룹의 전체과제현황이 {target_channel.mention}에 생성되었습니다.\n"
+                f"📋 표 형식으로 모든 과제 현황이 표시됩니다."
+            )
 
     @group_group.command(name='주간현황목록')
     @commands.has_permissions(administrator=True)

@@ -29,7 +29,7 @@ from common.database import (
 )
 from common.utils import load_data, get_kst_now, ensure_kst
 from domain.channel import find_role_by_group_name
-from common.boj_utils import get_user_solved_problems_from_solved_ac
+from common.boj_utils import get_user_solved_problems_from_solved_ac, check_problems_individual_queries, check_problems_individual_queries
 from common.utils import send_bot_notification
 from common.logger import get_logger
 
@@ -220,9 +220,9 @@ async def update_problem_set_status(group_name: str, problem_set_name: str, bot_
 
     await message.edit(embed=embed, view=ProblemSetStatusView(group_name, problem_set_name))
     
-    # 전체과제현황도 갱신
+    # 전체과제현황도 갱신 (문제집 부분만)
     from domain.channel import update_all_assignment_status
-    await update_all_assignment_status(group_name, bot_instance)
+    await update_all_assignment_status(group_name, bot_instance, assignment_type=f"문제집:{problem_set_name}")
 
 
 async def update_mock_test_status(group_name: str, mock_test_name: str, bot_instance):
@@ -261,7 +261,8 @@ async def update_mock_test_status(group_name: str, mock_test_name: str, bot_inst
     if not mock_test:
         return
     
-    problem_ids = [int(x) for x in mock_test['problem_ids'].split(',') if x.strip()]
+    # 모의테스트 문제 목록 (get_mock_test가 이미 리스트로 반환함)
+    problem_ids = mock_test['problem_ids'] if isinstance(mock_test['problem_ids'], list) else [int(x) for x in str(mock_test['problem_ids']).split(',') if x.strip()]
     total_problems = len(problem_ids)
     
     # 그룹 멤버 가져오기
@@ -403,9 +404,9 @@ async def update_mock_test_status(group_name: str, mock_test_name: str, bot_inst
 
     await message.edit(embed=embed, view=MockTestStatusView(group_name, mock_test_name))
     
-    # 전체과제현황도 갱신
+    # 전체과제현황도 갱신 (모의테스트 부분만)
     from domain.channel import update_all_assignment_status
-    await update_all_assignment_status(group_name, bot_instance)
+    await update_all_assignment_status(group_name, bot_instance, assignment_type=f"모의테스트:{mock_test_name}")
 
 
 @tasks.loop(time=[time(hour=h, minute=0) for h in range(0, 24)])
@@ -893,8 +894,8 @@ def setup(bot):
             await ctx.send(f"❌ '{group_name}' 그룹에 멤버가 없습니다.")
             return
         
-        # 모의테스트 문제 목록
-        problem_ids = [int(x) for x in mock_test['problem_ids'].split(',') if x.strip()]
+        # 모의테스트 문제 목록 (get_mock_test가 이미 리스트로 반환함)
+        problem_ids = mock_test['problem_ids'] if isinstance(mock_test['problem_ids'], list) else [int(x) for x in str(mock_test['problem_ids']).split(',') if x.strip()]
         total_problems = len(problem_ids)
         
         if total_problems == 0:
@@ -922,9 +923,13 @@ def setup(bot):
                 continue
             
             try:
-                # solved.ac에서 해결한 문제 목록 가져오기
-                # 최적화: 모의테스트 문제 목록을 전달하여 효율적으로 확인
-                solved_problems = await get_user_solved_problems_from_solved_ac(boj_handle, target_problems=problem_ids)
+                # 모의테스트는 각 문제마다 개별 query로 확인 (42페이지를 모두 조회할 필요 없음)
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+                }
+                solved_problems = await check_problems_individual_queries(boj_handle, problem_ids, headers)
                 solved_set = set(solved_problems)
                 
                 # 모의테스트 문제 중 해결한 문제 수
