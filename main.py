@@ -57,6 +57,13 @@ async def on_ready():
     print(f'서버 수: {len(bot.guilds)}')
     await bot.change_presence(activity=discord.Game(name="알고리즘 동아리 관리"))
     
+    # 봇 시작 시 만료된 과제들 정리
+    from domain.channel import cleanup_expired_assignments
+    try:
+        await cleanup_expired_assignments()
+    except Exception as e:
+        logger.error(f"[봇 시작] 만료된 과제 정리 중 오류: {e}", exc_info=True)
+    
     # 스케줄러는 이벤트 루프가 준비된 뒤 시작
     from domain.role import start_weekly_status_scheduler
     from domain.channel import start_group_weekly_scheduler

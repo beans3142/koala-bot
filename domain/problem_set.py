@@ -98,6 +98,15 @@ async def update_problem_set_status(group_name: str, problem_set_name: str, bot_
         await message.edit(embed=embed, view=ProblemSetStatusView(group_name, problem_set_name))
         return
     
+    # solved.ac 서버 응답 확인
+    from common.boj_utils import check_solved_ac_server_available
+    server_available = await check_solved_ac_server_available()
+    server_error_message = ""
+    
+    if not server_available:
+        server_error_message = "⚠️ **solved.ac 서버 응답 없음** - 나중에 다시 시도해주세요."
+        logger.warning(f"[문제집 갱신] solved.ac 서버 응답 없음: {group_name} - {problem_set_name}")
+    
     # 각 멤버의 해결 현황 조회
     results = []
     for user_info in users:
@@ -113,6 +122,18 @@ async def update_problem_set_status(group_name: str, problem_set_name: str, bot_
                 'total': total_problems,
                 'unsolved_problems': problem_ids.copy(),
                 'status': '⚠️'
+            })
+            continue
+        
+        # 서버 응답 없으면 조회 건너뛰기
+        if not server_available:
+            results.append({
+                'username': username,
+                'boj_handle': boj_handle,
+                'solved_count': 0,
+                'total': total_problems,
+                'unsolved_problems': problem_ids.copy(),
+                'status': '❌'
             })
             continue
         
@@ -150,15 +171,19 @@ async def update_problem_set_status(group_name: str, problem_set_name: str, bot_
     results.sort(key=lambda x: x['solved_count'], reverse=True)
     
     # 임베드 생성
+    description_text = (
+        f"**그룹:** {group_name}\n"
+        f"**전체 문제 수:** {total_problems}개\n"
+        f"**기간:** {week_start.strftime('%Y-%m-%d')} ~ {week_end.strftime('%Y-%m-%d %H:%M')}\n"
+        f"**마지막 갱신:** {now.strftime('%Y-%m-%d %H:%M')}"
+    )
+    if server_error_message:
+        description_text += f"\n\n{server_error_message}"
+    
     embed = discord.Embed(
         title=f"📚 '{problem_set_name}' 문제집 과제",
-        description=(
-            f"**그룹:** {group_name}\n"
-            f"**전체 문제 수:** {total_problems}개\n"
-            f"**기간:** {week_start.strftime('%Y-%m-%d')} ~ {week_end.strftime('%Y-%m-%d %H:%M')}\n"
-            f"**마지막 갱신:** {now.strftime('%Y-%m-%d %H:%M')}"
-        ),
-        color=discord.Color.blue()
+        description=description_text,
+        color=discord.Color.blue() if server_available else discord.Color.orange()
     )
     
     # 멤버별 현황
@@ -465,8 +490,20 @@ async def mock_test_auto_update():
         if week_start <= now <= week_end + timedelta(minutes=5):
             # 모의테스트 현황 갱신 (전체과제현황도 함께 갱신됨)
             await update_mock_test_status(info['group_name'], info['mock_test_name'], _bot_for_mock_test)
-            # DB에서 삭제
-            delete_group_mock_test_status(info['group_name'], info['mock_test_name'])
+            
+            # solved.ac 서버 응답 확인 후 삭제
+            from common.boj_utils import check_solved_ac_server_available
+            server_available = await check_solved_ac_server_available()
+            
+            if server_available:
+                # 서버가 정상이면 삭제 (2시간 유예 적용)
+                if now >= week_end + timedelta(hours=2):
+                    delete_group_mock_test_status(info['group_name'], info['mock_test_name'])
+                    logger.info(f"[월요일 01시] 모의테스트 삭제: {info['group_name']} - {info['mock_test_name']}")
+                else:
+                    logger.info(f"[월요일 01시] 모의테스트 삭제 유예 중: {info['group_name']} - {info['mock_test_name']} (2시간 유예)")
+            else:
+                logger.warning(f"[월요일 01시] solved.ac 서버가 응답하지 않아 모의테스트 삭제를 유예합니다: {info['group_name']} - {info['mock_test_name']}")
 
 
 class ProblemSetStatusView(discord.ui.View):
@@ -528,6 +565,14 @@ class ProblemSetStatusView(discord.ui.View):
         
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=True)
+        
+        # solved.ac 서버 응답 확인
+        from common.boj_utils import check_solved_ac_server_available
+        server_available = await check_solved_ac_server_available()
+        
+        if not server_available:
+            await interaction.followup.send("⚠️ **solved.ac 서버 응답 없음** - 나중에 다시 시도해주세요.", ephemeral=True)
+            return
         
         # info에서 그룹명과 문제집명 가져오기
         group_name = info['group_name']
@@ -595,6 +640,14 @@ class MockTestStatusView(discord.ui.View):
         
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=True)
+        
+        # solved.ac 서버 응답 확인
+        from common.boj_utils import check_solved_ac_server_available
+        server_available = await check_solved_ac_server_available()
+        
+        if not server_available:
+            await interaction.followup.send("⚠️ **solved.ac 서버 응답 없음** - 나중에 다시 시도해주세요.", ephemeral=True)
+            return
         
         # info에서 그룹명과 모의테스트명 가져오기
         group_name = info['group_name']

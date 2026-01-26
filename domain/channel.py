@@ -282,6 +282,15 @@ async def update_all_assignment_status(group_name: str, bot_instance, assignment
         delete_group_all_assignment_status(group_name)
         return
     
+    # solved.ac 서버 응답 확인
+    from common.boj_utils import check_solved_ac_server_available
+    server_available = await check_solved_ac_server_available()
+    server_error_message = ""
+    
+    if not server_available:
+        server_error_message = "⚠️ **solved.ac 서버 응답 없음** - 나중에 다시 시도해주세요."
+        logger.warning(f"[전체과제현황 갱신] solved.ac 서버 응답 없음: {group_name}")
+    
     # 모든 과제 정보 수집
     link_status = get_group_link_submission_status(group_name)
     problem_status = get_group_weekly_status(group_name)
@@ -291,13 +300,17 @@ async def update_all_assignment_status(group_name: str, bot_instance, assignment
     mock_test_statuses = [mt for mt in all_mock_tests if mt['group_name'] == group_name]
     
     # 임베드 생성
+    description_text = (
+        f"**기간:** {week_start.strftime('%Y-%m-%d')} ~ {week_end.strftime('%Y-%m-%d %H:%M')}\n"
+        f"**마지막 갱신:** {now.strftime('%Y-%m-%d %H:%M')}"
+    )
+    if server_error_message:
+        description_text += f"\n\n{server_error_message}"
+    
     embed = discord.Embed(
         title=f"📋 '{group_name}' 전체 과제 현황",
-        description=(
-            f"**기간:** {week_start.strftime('%Y-%m-%d')} ~ {week_end.strftime('%Y-%m-%d %H:%M')}\n"
-            f"**마지막 갱신:** {now.strftime('%Y-%m-%d %H:%M')}"
-        ),
-        color=discord.Color.gold()
+        description=description_text,
+        color=discord.Color.gold() if server_available else discord.Color.orange()
     )
     
     # 필요한 import
@@ -470,10 +483,15 @@ async def update_all_assignment_status(group_name: str, bot_instance, assignment
                         user_status_map[user_id]["문제풀이"] = "미등록"
                         continue
                     
+                    if not server_available:
+                        user_status_map[user_id]["문제풀이"] = "서버응답없음"
+                        continue
+                    
                     try:
                         solved_data = await get_weekly_solved_count(boj_handle, problem_week_start, problem_week_end)
                         user_status_map[user_id]["문제풀이"] = f"{solved_data['count']}개"
                     except Exception as e:
+                        logger.error(f"문제풀이 현황 조회 오류 ({boj_handle}): {e}", exc_info=True)
                         user_status_map[user_id]["문제풀이"] = "오류"
     
     # 문제집 과제 현황 (진행 중인 것만)
@@ -516,6 +534,10 @@ async def update_all_assignment_status(group_name: str, bot_instance, assignment
                 
                 if not boj_handle:
                     user_status_map[user_id][f"문제집:{problem_set_name}"] = "[0/" + str(total_problems) + "]"
+                    continue
+                
+                if not server_available:
+                    user_status_map[user_id][f"문제집:{problem_set_name}"] = "[서버응답없음]"
                     continue
                 
                 try:
@@ -565,6 +587,10 @@ async def update_all_assignment_status(group_name: str, bot_instance, assignment
                 
                 if not boj_handle:
                     user_status_map[user_id][f"모의테스트:{mock_test_name}"] = "[0/" + str(total_problems) + "]"
+                    continue
+                
+                if not server_available:
+                    user_status_map[user_id][f"모의테스트:{mock_test_name}"] = "[서버응답없음]"
                     continue
                 
                 try:
@@ -809,18 +835,27 @@ async def all_assignment_auto_create():
             logger.info(f"[월요일 01시] 전체과제현황 최종 갱신: {status['group_name']}")
             await update_all_assignment_status(status['group_name'], _bot_for_group_weekly, assignment_type=None)
     
-    # 3. 모든 과제 및 전체과제현황 삭제
+    # 3. 모든 과제 및 전체과제현황 삭제 (solved.ac 서버 확인 후 실행)
     from common.database import (
         delete_group_link_submission_status, delete_group_weekly_status,
         delete_group_problem_set_status, delete_group_mock_test_status,
         delete_group_all_assignment_status
     )
+    from common.boj_utils import check_solved_ac_server_available
+    
+    # solved.ac 서버 응답 확인
+    server_available = await check_solved_ac_server_available()
+    
+    if not server_available:
+        logger.warning("[월요일 01시] solved.ac 서버가 응답하지 않아 삭제 작업을 2시간 유예합니다.")
+        return
     
     # 링크제출 삭제
     for info in get_all_group_link_submission_status():
         week_end = datetime.fromisoformat(info['week_end'])
         week_end = ensure_kst(week_end)
-        if now >= week_end:
+        # 2시간 유예: week_end + 2시간이 지났을 때만 삭제
+        if now >= week_end + timedelta(hours=2):
             delete_group_link_submission_status(info['group_name'])
             logger.info(f"[월요일 01시] 링크제출 삭제: {info['group_name']}")
     
@@ -828,7 +863,8 @@ async def all_assignment_auto_create():
     for info in get_all_group_weekly_status():
         week_end = datetime.fromisoformat(info['week_end'])
         week_end = ensure_kst(week_end)
-        if now >= week_end:
+        # 2시간 유예: week_end + 2시간이 지났을 때만 삭제
+        if now >= week_end + timedelta(hours=2):
             delete_group_weekly_status(info['group_name'])
             logger.info(f"[월요일 01시] 문제풀이 삭제: {info['group_name']}")
     
@@ -836,7 +872,8 @@ async def all_assignment_auto_create():
     for info in get_all_group_problem_set_status():
         week_end = datetime.fromisoformat(info['week_end'])
         week_end = ensure_kst(week_end)
-        if now >= week_end:
+        # 2시간 유예: week_end + 2시간이 지났을 때만 삭제
+        if now >= week_end + timedelta(hours=2):
             delete_group_problem_set_status(info['group_name'], info['problem_set_name'])
             logger.info(f"[월요일 01시] 문제집 삭제: {info['group_name']} - {info['problem_set_name']}")
     
@@ -844,7 +881,8 @@ async def all_assignment_auto_create():
     for info in get_all_group_mock_test_status():
         week_end = datetime.fromisoformat(info['week_end'])
         week_end = ensure_kst(week_end)
-        if now >= week_end:
+        # 2시간 유예: week_end + 2시간이 지났을 때만 삭제
+        if now >= week_end + timedelta(hours=2):
             delete_group_mock_test_status(info['group_name'], info['mock_test_name'])
             logger.info(f"[월요일 01시] 모의테스트 삭제: {info['group_name']} - {info['mock_test_name']}")
     
@@ -852,7 +890,8 @@ async def all_assignment_auto_create():
     for status in all_assignment_statuses:
         week_end = datetime.fromisoformat(status['week_end'])
         week_end = ensure_kst(week_end)
-        if now >= week_end:
+        # 2시간 유예: week_end + 2시간이 지났을 때만 삭제
+        if now >= week_end + timedelta(hours=2):
             delete_group_all_assignment_status(status['group_name'])
             logger.info(f"[월요일 01시] 전체과제현황 삭제: {status['group_name']}")
     
@@ -1034,6 +1073,14 @@ class AllAssignmentStatusView(discord.ui.View):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=True)
         
+        # solved.ac 서버 응답 확인
+        from common.boj_utils import check_solved_ac_server_available
+        server_available = await check_solved_ac_server_available()
+        
+        if not server_available:
+            await interaction.followup.send("⚠️ **solved.ac 서버 응답 없음** - 나중에 다시 시도해주세요.", ephemeral=True)
+            return
+        
         # 전체 갱신
         await update_all_assignment_status(info['group_name'], interaction.client, assignment_type=None)
         await interaction.followup.send("✅ 전체과제현황이 갱신되었습니다.", ephemeral=True)
@@ -1062,6 +1109,14 @@ class AllAssignmentStatusView(discord.ui.View):
 
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=True)
+        
+        # solved.ac 서버 응답 확인
+        from common.boj_utils import check_solved_ac_server_available
+        server_available = await check_solved_ac_server_available()
+        
+        if not server_available:
+            await interaction.followup.send("⚠️ **solved.ac 서버 응답 없음** - 나중에 다시 시도해주세요.", ephemeral=True)
+            return
         
         # 문제풀이 갱신 (자동으로 전체과제현황도 갱신됨)
         bot_instance = interaction.client
@@ -1131,6 +1186,14 @@ class AllAssignmentStatusView(discord.ui.View):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=True)
         
+        # solved.ac 서버 응답 확인
+        from common.boj_utils import check_solved_ac_server_available
+        server_available = await check_solved_ac_server_available()
+        
+        if not server_available:
+            await interaction.followup.send("⚠️ **solved.ac 서버 응답 없음** - 나중에 다시 시도해주세요.", ephemeral=True)
+            return
+        
         # 문제집 갱신 (모든 문제집 갱신)
         bot_instance = interaction.client
         if not bot_instance:
@@ -1179,6 +1242,14 @@ class AllAssignmentStatusView(discord.ui.View):
 
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=True)
+        
+        # solved.ac 서버 응답 확인
+        from common.boj_utils import check_solved_ac_server_available
+        server_available = await check_solved_ac_server_available()
+        
+        if not server_available:
+            await interaction.followup.send("⚠️ **solved.ac 서버 응답 없음** - 나중에 다시 시도해주세요.", ephemeral=True)
+            return
         
         # 모의테스트 갱신 (모든 모의테스트 갱신)
         bot_instance = interaction.client
@@ -1272,6 +1343,73 @@ def register_all_assignment_status_views(bot):
         print(f"[OK] 전체과제현황 persistent view 등록 완료 (custom_id: all_assignment_status_refresh)")
     except Exception as e:
         print(f"[ERROR] 전체과제현황 persistent view 등록 실패: {e}")
+
+
+async def cleanup_expired_assignments():
+    """봇 시작 시 만료된 과제들 자동 삭제"""
+    from common.database import (
+        get_all_group_link_submission_status, get_all_group_weekly_status,
+        get_all_group_problem_set_status, get_all_group_mock_test_status,
+        get_all_group_all_assignment_status,
+        delete_group_link_submission_status, delete_group_weekly_status,
+        delete_group_problem_set_status, delete_group_mock_test_status,
+        delete_group_all_assignment_status
+    )
+    
+    now = get_kst_now()
+    deleted_count = 0
+    
+    logger.info("[봇 시작] 만료된 과제 정리 시작")
+    
+    # 링크제출 삭제
+    for info in get_all_group_link_submission_status():
+        week_end = datetime.fromisoformat(info['week_end'])
+        week_end = ensure_kst(week_end)
+        if now >= week_end:
+            delete_group_link_submission_status(info['group_name'])
+            deleted_count += 1
+            logger.info(f"[봇 시작] 만료된 링크제출 삭제: {info['group_name']}")
+    
+    # 문제풀이 삭제
+    for info in get_all_group_weekly_status():
+        week_end = datetime.fromisoformat(info['week_end'])
+        week_end = ensure_kst(week_end)
+        if now >= week_end:
+            delete_group_weekly_status(info['group_name'])
+            deleted_count += 1
+            logger.info(f"[봇 시작] 만료된 문제풀이 삭제: {info['group_name']}")
+    
+    # 문제집 삭제
+    for info in get_all_group_problem_set_status():
+        week_end = datetime.fromisoformat(info['week_end'])
+        week_end = ensure_kst(week_end)
+        if now >= week_end:
+            delete_group_problem_set_status(info['group_name'], info['problem_set_name'])
+            deleted_count += 1
+            logger.info(f"[봇 시작] 만료된 문제집 삭제: {info['group_name']} - {info['problem_set_name']}")
+    
+    # 모의테스트 삭제
+    for info in get_all_group_mock_test_status():
+        week_end = datetime.fromisoformat(info['week_end'])
+        week_end = ensure_kst(week_end)
+        if now >= week_end:
+            delete_group_mock_test_status(info['group_name'], info['mock_test_name'])
+            deleted_count += 1
+            logger.info(f"[봇 시작] 만료된 모의테스트 삭제: {info['group_name']} - {info['mock_test_name']}")
+    
+    # 전체과제현황 삭제
+    for status in get_all_group_all_assignment_status():
+        week_end = datetime.fromisoformat(status['week_end'])
+        week_end = ensure_kst(week_end)
+        if now >= week_end:
+            delete_group_all_assignment_status(status['group_name'])
+            deleted_count += 1
+            logger.info(f"[봇 시작] 만료된 전체과제현황 삭제: {status['group_name']}")
+    
+    if deleted_count > 0:
+        logger.info(f"[봇 시작] 총 {deleted_count}개의 만료된 과제가 삭제되었습니다.")
+    else:
+        logger.info("[봇 시작] 만료된 과제가 없습니다.")
 
 
 def start_group_weekly_scheduler(bot):

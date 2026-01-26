@@ -186,6 +186,9 @@ async def get_user_solved_problems_from_solved_ac(baekjoon_id: str, target_probl
         # 전체 목록이 필요하거나 문제가 많으면 페이지 크롤링 사용
         return await _get_all_solved_problems_via_pages(baekjoon_id, target_problems, headers)
                 
+    except (aiohttp.ClientConnectorError, aiohttp.ServerTimeoutError, asyncio.TimeoutError) as e:
+        logger.error(f"[solved.ac 크롤링] solved.ac 서버 연결 실패: {e} (서버 다운 가능성)")
+        return []
     except Exception as e:
         logger.error(f"[solved.ac 크롤링] 오류: {e}", exc_info=True)
         return []
@@ -206,7 +209,8 @@ async def check_problems_individual_queries(baekjoon_id: str, target_problems: L
         
         logger.info(f"[개별 문제 확인] {baekjoon_id} - {len(target_problems)}개 문제 개별 확인 시작")
         
-        async with aiohttp.ClientSession(headers=headers) as session:
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
             for problem_id in target_problems:
                 # 각 문제마다 query: s@{handle}+{problem_id}
                 query = f"s@{baekjoon_id}+{problem_id}"
@@ -216,7 +220,7 @@ async def check_problems_individual_queries(baekjoon_id: str, target_problems: L
                 try:
                     async with session.get(url) as response:
                         if response.status != 200:
-                            logger.debug(f"[개별 문제 확인] {baekjoon_id} - 문제 {problem_id}: HTTP {response.status}")
+                            logger.debug(f"[개별 문제 확인] {baekjoon_id} - 문제 {problem_id}: HTTP {response.status} (서버 문제 가능성)")
                             await asyncio.sleep(0.2)
                             continue
                         
@@ -249,6 +253,10 @@ async def check_problems_individual_queries(baekjoon_id: str, target_problems: L
                         
                         await asyncio.sleep(0.2)  # Rate limiting 방지
                         
+                except (aiohttp.ClientConnectorError, aiohttp.ServerTimeoutError, asyncio.TimeoutError) as e:
+                    logger.error(f"[개별 문제 확인] {baekjoon_id} - 문제 {problem_id}: solved.ac 서버 연결 실패: {e} (서버 다운 가능성)")
+                    await asyncio.sleep(0.2)
+                    continue
                 except Exception as e:
                     logger.error(f"[개별 문제 확인] {baekjoon_id} - 문제 {problem_id} 확인 중 오류: {e}")
                     await asyncio.sleep(0.2)
@@ -258,6 +266,9 @@ async def check_problems_individual_queries(baekjoon_id: str, target_problems: L
         logger.info(f"[개별 문제 확인] {baekjoon_id} - {len(solved_problems)}/{len(target_problems)}개 해결")
         return solved_problems
         
+    except (aiohttp.ClientConnectorError, aiohttp.ServerTimeoutError, asyncio.TimeoutError) as e:
+        logger.error(f"[개별 문제 확인] solved.ac 서버 연결 실패: {e} (서버 다운 가능성)")
+        return []
     except Exception as e:
         logger.error(f"[개별 문제 확인] 오류: {e}", exc_info=True)
         return []
@@ -286,18 +297,21 @@ async def _check_problems_via_search_api(baekjoon_id: str, target_problems: List
         
         logger.debug(f"[solved.ac 검색 API] {baekjoon_id} - 쿼리: {query} -> 인코딩: {encoded_query}")
         
-        async with aiohttp.ClientSession(headers=headers) as session:
+        # 타임아웃 설정 (10초)
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
             while page <= max_pages:
                 url = f"https://solved.ac/problems?query={encoded_query}&page={page}"
                 logger.debug(f"[solved.ac 검색 API] {baekjoon_id} - 페이지 {page} 크롤링: {url}")
                 
-                async with session.get(url) as response:
-                    if response.status != 200:
-                        if page == 1:
-                            logger.warning(f"[solved.ac 검색 API] HTTP {response.status} 에러: {url}")
-                            return []
-                        # 첫 페이지가 아니면 더 이상 페이지가 없는 것으로 간주
-                        break
+                try:
+                    async with session.get(url) as response:
+                        if response.status != 200:
+                            if page == 1:
+                                logger.warning(f"[solved.ac 검색 API] HTTP {response.status} 에러: {url} (solved.ac 서버 문제 가능성)")
+                                return []
+                            # 첫 페이지가 아니면 더 이상 페이지가 없는 것으로 간주
+                            break
                     
                     html = await response.text()
                     soup = BeautifulSoup(html, 'html.parser')
@@ -370,6 +384,17 @@ async def _check_problems_via_search_api(baekjoon_id: str, target_problems: List
                     
                     page += 1
                     await asyncio.sleep(0.3)  # Rate limiting 방지
+                except (aiohttp.ClientConnectorError, aiohttp.ServerTimeoutError, asyncio.TimeoutError) as e:
+                    if page == 1:
+                        logger.error(f"[solved.ac 검색 API] solved.ac 서버 연결 실패: {e} (서버 다운 가능성)")
+                        return []
+                    # 첫 페이지가 아니면 더 이상 페이지가 없는 것으로 간주
+                    break
+                except Exception as e:
+                    if page == 1:
+                        logger.error(f"[solved.ac 검색 API] 예상치 못한 오류: {e}")
+                        return []
+                    break
         
         # 중복 제거 및 정렬
         solved_problems = sorted(list(set(solved_problems)))
@@ -377,6 +402,9 @@ async def _check_problems_via_search_api(baekjoon_id: str, target_problems: List
         logger.info(f"[solved.ac 검색 API] {baekjoon_id} - 목표 문제 중 {len(solved_problems)}/{len(target_problems)}개 해결 (페이지 {page-1}개 크롤링)")
         return solved_problems
                 
+    except (aiohttp.ClientConnectorError, aiohttp.ServerTimeoutError, asyncio.TimeoutError) as e:
+        logger.error(f"[solved.ac 검색 API] solved.ac 서버 연결 실패: {e} (서버 다운 가능성)")
+        return []
     except Exception as e:
         logger.error(f"[solved.ac 검색 API] 오류: {e}", exc_info=True)
         return []
@@ -399,19 +427,21 @@ async def _get_all_solved_problems_via_pages(baekjoon_id: str, target_problems: 
     target_set = set(target_problems) if target_problems else None
     last_page = None  # 마지막 페이지 번호
     
-    async with aiohttp.ClientSession(headers=headers) as session:
+    timeout = aiohttp.ClientTimeout(total=10)
+    async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
         while page <= max_pages:
             url = f"https://solved.ac/profile/{baekjoon_id}/solved"
             if page > 1:
                 url += f"?page={page}"
             
-            async with session.get(url) as response:
-                if response.status != 200:
-                    if page == 1:
-                        logger.warning(f"[solved.ac 크롤링] HTTP {response.status} 에러: {url}")
-                        return []
-                    # 첫 페이지가 아니면 더 이상 페이지가 없는 것으로 간주
-                    break
+            try:
+                async with session.get(url) as response:
+                    if response.status != 200:
+                        if page == 1:
+                            logger.warning(f"[solved.ac 크롤링] HTTP {response.status} 에러: {url} (서버 문제 가능성)")
+                            return []
+                        # 첫 페이지가 아니면 더 이상 페이지가 없는 것으로 간주
+                        break
                 
                 html = await response.text()
                 soup = BeautifulSoup(html, 'html.parser')
@@ -466,6 +496,17 @@ async def _get_all_solved_problems_via_pages(baekjoon_id: str, target_problems: 
                 
                 page += 1
                 await asyncio.sleep(0.3)  # Rate limiting 방지
+            except (aiohttp.ClientConnectorError, aiohttp.ServerTimeoutError, asyncio.TimeoutError) as e:
+                if page == 1:
+                    logger.error(f"[solved.ac 크롤링] solved.ac 서버 연결 실패: {e} (서버 다운 가능성)")
+                    return []
+                # 첫 페이지가 아니면 더 이상 페이지가 없는 것으로 간주
+                break
+            except Exception as e:
+                if page == 1:
+                    logger.error(f"[solved.ac 크롤링] 예상치 못한 오류: {e}")
+                    return []
+                break
     
     # 중복 제거 및 정렬
     solved_problems = sorted(list(set(solved_problems)))
@@ -478,6 +519,37 @@ async def _get_all_solved_problems_via_pages(baekjoon_id: str, target_problems: 
         logger.info(f"[solved.ac 크롤링] {baekjoon_id} - 해결한 문제 {len(solved_problems)}개 발견 (페이지 {page-1}개 크롤링)")
     
     return solved_problems
+
+async def check_solved_ac_server_available() -> bool:
+    """
+    solved.ac 서버가 응답 가능한지 확인
+    
+    Returns:
+        True: 서버가 정상 응답
+        False: 서버가 다운되었거나 응답 없음
+    """
+    try:
+        # 간단한 API 호출로 서버 상태 확인 (존재하는 사용자로 테스트)
+        url = "https://solved.ac/api/v3/user/show?handle=wookje"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+
+        timeout = aiohttp.ClientTimeout(total=5)  # 빠른 확인을 위해 5초
+        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+            async with session.get(url) as response:
+                # 200 또는 404 모두 서버가 응답하는 것이므로 정상
+                if response.status in [200, 404]:
+                    return True
+                # 기타 상태코드는 서버 문제 가능성
+                logger.warning(f"[solved.ac 서버 확인] HTTP {response.status} 응답 (서버 문제 가능성)")
+                return False
+    except (aiohttp.ClientConnectorError, aiohttp.ServerTimeoutError, asyncio.TimeoutError) as e:
+        logger.error(f"[solved.ac 서버 확인] 서버 연결 실패: {e} (서버 다운 가능성)")
+        return False
+    except Exception as e:
+        logger.error(f"[solved.ac 서버 확인] 오류: {e}", exc_info=True)
+        return False
 
 async def verify_user_exists(baekjoon_id: str) -> bool:
     """
@@ -497,16 +569,21 @@ async def verify_user_exists(baekjoon_id: str) -> bool:
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
 
-        async with aiohttp.ClientSession(headers=headers) as session:
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
             async with session.get(url) as response:
                 if response.status == 200:
                     return True
                 if response.status == 404:
                     return False
                 # 기타 상태코드는 보수적으로 False 처리
+                logger.warning(f"[solved.ac API] HTTP {response.status} 에러: {url} (서버 문제 가능성)")
                 return False
+    except (aiohttp.ClientConnectorError, aiohttp.ServerTimeoutError, asyncio.TimeoutError) as e:
+        logger.error(f"[solved.ac API] solved.ac 서버 연결 실패: {e} (서버 다운 가능성)")
+        return False
     except Exception as e:
-        print(f"solved.ac 사용자 확인 오류: {e}")
+        logger.error(f"[solved.ac API] 사용자 확인 오류: {e}", exc_info=True)
         return False
 
 async def check_problem_solved(baekjoon_id: str, problem_id: int) -> bool:
@@ -536,9 +613,11 @@ async def get_weekly_solved_count(baekjoon_id: str, start_date: datetime, end_da
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
 
-        async with aiohttp.ClientSession(headers=headers) as session:
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
             async with session.get(url) as response:
                 if response.status != 200:
+                    logger.warning(f"[solved.ac API] HTTP {response.status} 에러: {url} (서버 문제 가능성)")
                     return {'count': 0, 'problems': []}
 
                 data = await response.json()
@@ -607,8 +686,11 @@ async def get_weekly_solved_count(baekjoon_id: str, start_date: datetime, end_da
             'count': count,
             'problems': []
         }
+    except (aiohttp.ClientConnectorError, aiohttp.ServerTimeoutError, asyncio.TimeoutError) as e:
+        logger.error(f"[solved.ac API] solved.ac 서버 연결 실패: {e} (서버 다운 가능성)")
+        return {'count': 0, 'problems': []}
     except Exception as e:
-        print(f"주간 해결한 문제 수 조회 오류(solved.ac): {e}")
+        logger.error(f"[solved.ac API] 주간 해결한 문제 수 조회 오류: {e}", exc_info=True)
         return {'count': 0, 'problems': []}
 
 async def get_weekly_solved_from_boj_status(baekjoon_id: str, start_date: datetime, end_date: datetime, status_callback=None) -> Dict:
