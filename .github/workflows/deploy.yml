@@ -116,6 +116,19 @@ jobs:
             source venv/bin/activate
             pip install --upgrade pip --quiet
             pip install -r requirements.txt --quiet
+
+            # Playwright Chromium 설치 (이미 설치되어 있으면 skip)
+            # 1GB RAM 환경: chromium만 설치 (firefox/webkit 제외)
+            CHROMIUM_PATH="$HOME/.cache/ms-playwright/chromium-"*"/chrome-linux/chrome"
+            if ! ls $CHROMIUM_PATH 1> /dev/null 2>&1; then
+              echo "🌐 Playwright Chromium 최초 설치 중 (~150MB)..."
+              # 시스템 의존성은 sudo 필요 — 별도 setup-oracle.sh에서 처리하거나 수동
+              python -m playwright install chromium 2>&1 | tail -5 || {
+                echo "⚠️ Chromium 설치 실패 — 수동 설치 필요: 'python -m playwright install chromium'"
+              }
+            else
+              echo "✅ Chromium 이미 설치됨"
+            fi
             
             # 봇 재시작
             echo "🔄 봇 재시작 중..."
