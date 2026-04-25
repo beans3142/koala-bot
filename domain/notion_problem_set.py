@@ -763,3 +763,74 @@ def setup(bot: commands.Bot):
     async def setup_error(ctx, error):
         if isinstance(error, commands.MissingPermissions):
             await ctx.send("❌ 관리자 권한이 필요합니다.")
+
+    @bot.command(name='정올수집')
+    @commands.has_permissions(administrator=True)
+    async def jungol_collect_info(ctx: commands.Context):
+        """Jungol userscript 사용 안내 (관리자 전용).
+        운영자가 본인 브라우저(한국 IP)로 정올 데이터 긁어 봇에 POST 하는 방식."""
+        import os
+        bot_base = os.getenv('BOT_PUBLIC_URL', 'http://168.107.5.212:8080')
+        token_set = bool(os.getenv('BOT_ADMIN_TOKEN'))
+
+        # 활성 Jungol 문제 미리보기
+        try:
+            from domain.notion_sync import sync_problem_sets
+            all_status = get_all_notion_problem_set_status()
+            now = get_kst_now()
+            active = set()
+            for s in all_status:
+                ws = ensure_kst(datetime.fromisoformat(s['week_start']))
+                we = ensure_kst(datetime.fromisoformat(s['week_end']))
+                if ws <= now <= we:
+                    active.add(s['problem_set_name'])
+            jungol_pids = set()
+            if active:
+                all_sets = await sync_problem_sets()
+                for ps in all_sets:
+                    if ps['name'] in active:
+                        for p in ps['problems']:
+                            if p['oj'] == 'jungol':
+                                jungol_pids.add(str(p['id']))
+        except Exception:
+            jungol_pids = set()
+
+        embed = discord.Embed(
+            title="🐨 Jungol 데이터 수집 안내",
+            description=(
+                "정올은 datacenter IP 차단으로 봇이 직접 못 긁습니다. "
+                "운영자 브라우저(한국 IP) 거쳐서 데이터 수집하는 방식.\n\n"
+                "**1회 셋업** (5분):\n"
+                "1. Tampermonkey 확장 설치\n"
+                "   - Chrome: https://chromewebstore.google.com/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo\n"
+                "2. 봇 저장소의 `userscript/jungol_crawler.user.js` 내용을 Tampermonkey에 추가\n"
+                "   - GitHub raw URL 통해 자동 설치도 가능\n"
+                "3. 첫 실행 시 admin 토큰 입력 (PM 으로 알려드립니다)\n\n"
+                "**사용법**:\n"
+                "- jungol.co.kr 어디든 접속 → 우측 하단 🐨 KOALA 버튼 표시됨\n"
+                "- **📥 일괄 수집** 클릭 → 활성 문제집의 모든 Jungol 문제 자동 긁어 봇으로 전송\n"
+                "- **이 페이지만 수집** → 현재 보는 문제만"
+            ),
+            color=discord.Color.blurple(),
+        )
+        embed.add_field(
+            name="🔌 봇 서버",
+            value=f"`{bot_base}`\nadmin 토큰 설정: {'✅' if token_set else '❌ BOT_ADMIN_TOKEN 미설정'}",
+            inline=False,
+        )
+        if jungol_pids:
+            preview = ", ".join(sorted(jungol_pids)[:20])
+            if len(jungol_pids) > 20:
+                preview += f" ... (+{len(jungol_pids) - 20})"
+            embed.add_field(
+                name=f"📋 현재 수집 대상 Jungol 문제 ({len(jungol_pids)}개)",
+                value=preview,
+                inline=False,
+            )
+        else:
+            embed.add_field(
+                name="📋 현재 수집 대상",
+                value="활성 문제집의 Jungol 문제 0개 — `/문제집풀이현황` 으로 먼저 활성화하세요",
+                inline=False,
+            )
+        await ctx.send(embed=embed, ephemeral=True if hasattr(ctx, 'interaction') else False)

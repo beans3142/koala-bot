@@ -48,6 +48,14 @@ class KoalaBot(commands.Bot):
         register_notion_problem_set_refresh_view(self)
         print("[OK] Persistent views 등록 완료")
 
+        # HTTP 서버 시작 (Jungol userscript 가 POST 하는 endpoint 호스팅)
+        from common.web_server import start_web_server
+        try:
+            await start_web_server(host="0.0.0.0", port=int(os.getenv("BOT_WEB_PORT", "8080")))
+            print("[OK] Web server 시작 (Jungol userscript endpoint)")
+        except Exception as e:
+            print(f"[WARN] Web server 시작 실패: {e}")
+
 
 bot = KoalaBot(command_prefix='/', intents=intents)
 
