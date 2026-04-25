@@ -119,9 +119,9 @@ class UserRegistrationView(discord.ui.View):
 def setup(bot):
     """봇에 명령어 등록"""
 
-    @bot.command(name='등록')
+    @bot.command(name='프로필')
     async def user_register_form(ctx: commands.Context):
-        """이름 + 4개 OJ ID 입력 폼 (이름만 필수). 다시 눌러 수정도 가능."""
+        """이름(본명) + 4개 OJ ID 입력 폼 (이름만 필수). 다시 눌러 수정도 가능."""
         existing = get_user(str(ctx.author.id)) or {}
         view = UserRegistrationView(ctx.author)
         if existing.get('name'):
@@ -139,7 +139,7 @@ def setup(bot):
 
     @bot.command(name='유저등록')
     async def user_register_quick(ctx: commands.Context, boj_handle: str):
-        """(레거시) BOJ 핸들만 빠르게 등록 — 새 사용자는 /등록 권장"""
+        """(레거시) BOJ 핸들만 빠르게 등록 — 새 사용자는 /프로필 권장"""
         exists = await verify_user_exists(boj_handle)
         if not exists:
             await ctx.send(f"❌ 백준 아이디 '{boj_handle}'를 찾을 수 없습니다.")
@@ -152,7 +152,7 @@ def setup(bot):
         )
         await ctx.send(
             f"✅ BOJ 핸들 등록 완료: **{boj_handle}**\n"
-            f"ⓘ 이름·다른 OJ도 등록하려면 `/등록` 명령어를 사용하세요."
+            f"ⓘ 이름·다른 OJ도 등록하려면 `/프로필` 명령어를 사용하세요."
         )
 
     @bot.command(name='내정보')
@@ -162,7 +162,7 @@ def setup(bot):
         user_db = get_user(user_id)
 
         if not user_db:
-            await ctx.send("❌ 등록된 정보가 없습니다. `/등록` 명령어로 먼저 등록해주세요.")
+            await ctx.send("❌ 등록된 정보가 없습니다. `/프로필` 명령어로 먼저 등록해주세요.")
             return
 
         name = user_db.get('name')
