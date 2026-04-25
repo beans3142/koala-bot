@@ -36,6 +36,15 @@ echo "📥 의존성 설치 중..."
 pip install --upgrade pip
 pip install -r requirements.txt
 
+# Playwright Chromium 시스템 의존성 + 브라우저 설치 (Jungol 일별 캐시 갱신용)
+echo "🌐 Playwright Chromium 설치 중..."
+# Oracle Linux (RHEL 계열)에서 Chromium 실행에 필요한 라이브러리들
+sudo yum install -y \
+    nss nspr atk at-spi2-atk cups-libs libdrm libXcomposite libXdamage \
+    libXfixes libXrandr libgbm libxshmfence pango cairo alsa-lib \
+    || echo "⚠️ 일부 시스템 라이브러리 설치 실패 (이미 있을 수 있음)"
+python -m playwright install chromium
+
 # .env 파일 확인
 if [ ! -f .env ]; then
     echo "⚠️ .env 파일이 없습니다!"

@@ -39,11 +39,13 @@ class KoalaBot(commands.Bot):
         from domain.role import register_persistent_view
         from domain.channel import register_group_weekly_views, register_all_assignment_status_views
         from domain.link_submission import register_link_submission_views
+        from domain.notion_problem_set import register_notion_problem_set_refresh_view
 
         register_persistent_view(self)
         register_group_weekly_views(self)
         register_link_submission_views(self)
         register_all_assignment_status_views(self)
+        register_notion_problem_set_refresh_view(self)
         print("[OK] Persistent views 등록 완료")
 
 
@@ -69,12 +71,14 @@ async def on_ready():
     from domain.channel import start_group_weekly_scheduler
     from domain.link_submission import start_link_submission_scheduler
     from domain.problem_set import start_problem_set_scheduler, start_mock_test_scheduler
+    from domain.notion_problem_set import start_notion_problem_set_scheduler
 
     start_weekly_status_scheduler(bot)
     start_group_weekly_scheduler(bot)
     start_link_submission_scheduler(bot)
     start_problem_set_scheduler(bot)
     start_mock_test_scheduler(bot)
+    start_notion_problem_set_scheduler(bot)
 
 @bot.event
 async def on_command_error(ctx, error):
@@ -100,9 +104,9 @@ async def on_interaction(interaction: discord.Interaction):
 # 모듈 로드
 def load_modules():
     """모든 모듈 로드"""
-    from domain import role, channel, study, user, link_submission, problem_set
+    from domain import role, channel, study, user, link_submission, problem_set, notion_sync, notion_problem_set
     from common import help
-    
+
     role.setup(bot)
     channel.setup(bot)
     help.setup(bot)
@@ -110,6 +114,8 @@ def load_modules():
     study.setup(bot)
     link_submission.setup(bot)
     problem_set.setup(bot)
+    notion_sync.setup(bot)
+    notion_problem_set.setup(bot)
 
 # 봇 실행
 if __name__ == '__main__':

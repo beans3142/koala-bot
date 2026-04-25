@@ -26,11 +26,27 @@ def init_database():
         CREATE TABLE IF NOT EXISTS users (
             user_id TEXT PRIMARY KEY,
             username TEXT,
+            name TEXT,
             boj_handle TEXT,
+            codeforces_handle TEXT,
+            atcoder_handle TEXT,
+            jungol_handle TEXT,
             created_at TEXT,
             updated_at TEXT
         )
     ''')
+
+    # 기존 DB에 컬럼이 없으면 추가 (마이그레이션)
+    def _add_column_if_missing(table: str, column: str, coltype: str):
+        cursor.execute(f"PRAGMA table_info({table})")
+        existing = [row[1] for row in cursor.fetchall()]
+        if column not in existing:
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+
+    _add_column_if_missing('users', 'name', 'TEXT')
+    _add_column_if_missing('users', 'codeforces_handle', 'TEXT')
+    _add_column_if_missing('users', 'atcoder_handle', 'TEXT')
+    _add_column_if_missing('users', 'jungol_handle', 'TEXT')
     
     # 역할 토큰 테이블
     cursor.execute('''
@@ -215,7 +231,42 @@ def init_database():
             updated_at TEXT
         )
     ''')
-    
+
+    # 노션 문제집 풀이현황 status (live 동기화 — 문제 목록은 매번 노션에서 fetch)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS notion_problem_set_status (
+            group_name TEXT,
+            problem_set_name TEXT,
+            role_name TEXT,
+            channel_id TEXT,
+            message_id TEXT,
+            week_start TEXT,
+            week_end TEXT,
+            last_updated TEXT,
+            created_at TEXT,
+            PRIMARY KEY (group_name, problem_set_name)
+        )
+    ''')
+
+    # Jungol 풀이 캐시 (Playwright 스크래퍼가 일별 갱신)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS jungol_solved (
+            problem_id TEXT,
+            handle TEXT,
+            last_seen_at TEXT,
+            PRIMARY KEY (problem_id, handle)
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS jungol_problem_fetch (
+            problem_id TEXT PRIMARY KEY,
+            fetched_at TEXT,
+            success INTEGER DEFAULT 0,
+            user_count INTEGER DEFAULT 0,
+            error_message TEXT
+        )
+    ''')
+
     conn.commit()
     conn.close()
 
@@ -255,25 +306,60 @@ def get_user(user_id: str) -> Optional[Dict]:
         return dict(row)
     return None
 
-def create_or_update_user(user_id: str, username: str, boj_handle: Optional[str] = None):
-    """사용자 생성 또는 업데이트"""
+_UNSET = object()
+
+
+def create_or_update_user(
+    user_id: str,
+    username: str,
+    boj_handle=_UNSET,
+    name=_UNSET,
+    codeforces_handle=_UNSET,
+    atcoder_handle=_UNSET,
+    jungol_handle=_UNSET,
+):
+    """사용자 생성 또는 업데이트.
+    명시적으로 전달된 필드만 업데이트되고, _UNSET인 필드는 기존 값 유지.
+    None을 명시적으로 전달하면 NULL로 클리어.
+    """
     conn = get_connection()
     cursor = conn.cursor()
-    
     now = datetime.now().isoformat()
     user = get_user(user_id)
-    
+
+    optional_fields = [
+        ('boj_handle', boj_handle),
+        ('name', name),
+        ('codeforces_handle', codeforces_handle),
+        ('atcoder_handle', atcoder_handle),
+        ('jungol_handle', jungol_handle),
+    ]
+
     if user:
-        cursor.execute('''
-            UPDATE users SET username = ?, boj_handle = ?, updated_at = ?
-            WHERE user_id = ?
-        ''', (username, boj_handle, now, user_id))
+        sets = ['username = ?', 'updated_at = ?']
+        values = [username, now]
+        for col, val in optional_fields:
+            if val is not _UNSET:
+                sets.append(f'{col} = ?')
+                values.append(val)
+        values.append(user_id)
+        cursor.execute(
+            f"UPDATE users SET {', '.join(sets)} WHERE user_id = ?",
+            values,
+        )
     else:
-        cursor.execute('''
-            INSERT INTO users (user_id, username, boj_handle, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (user_id, username, boj_handle, now, now))
-    
+        # INSERT — 전달 안 된 필드는 NULL
+        cols = ['user_id', 'username', 'created_at', 'updated_at']
+        vals = [user_id, username, now, now]
+        for col, val in optional_fields:
+            cols.append(col)
+            vals.append(None if val is _UNSET else val)
+        placeholders = ', '.join('?' for _ in cols)
+        cursor.execute(
+            f"INSERT INTO users ({', '.join(cols)}) VALUES ({placeholders})",
+            vals,
+        )
+
     conn.commit()
     conn.close()
 
@@ -382,7 +468,8 @@ def get_role_users(role_name: str) -> List[Dict]:
     cursor = conn.cursor()
     
     cursor.execute('''
-        SELECT u.user_id, u.username, u.boj_handle 
+        SELECT u.user_id, u.username, u.name,
+               u.boj_handle, u.codeforces_handle, u.atcoder_handle, u.jungol_handle
         FROM users u
         JOIN user_roles ur ON u.user_id = ur.user_id
         WHERE ur.role_name = ?
@@ -1357,3 +1444,136 @@ def save_data(data: Dict):
                     assignment.get('created_by', '')
                 )
 
+
+
+# ==================== 노션 문제집 풀이현황 status ====================
+
+def save_notion_problem_set_status(
+    group_name: str,
+    problem_set_name: str,
+    role_name: str,
+    channel_id: str,
+    message_id: str,
+    week_start: str,
+    week_end: str,
+    last_updated: str,
+):
+    """노션 문제집 풀이현황 status upsert (PRIMARY KEY: group_name, problem_set_name)"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    now = datetime.now().isoformat()
+    existing = cursor.execute(
+        'SELECT created_at FROM notion_problem_set_status WHERE group_name = ? AND problem_set_name = ?',
+        (group_name, problem_set_name),
+    ).fetchone()
+    created_at = existing['created_at'] if existing else now
+    cursor.execute('''
+        INSERT OR REPLACE INTO notion_problem_set_status
+        (group_name, problem_set_name, role_name, channel_id, message_id,
+         week_start, week_end, last_updated, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (group_name, problem_set_name, role_name, channel_id, message_id,
+          week_start, week_end, last_updated, created_at))
+    conn.commit()
+    conn.close()
+
+
+def get_notion_problem_set_status(group_name: str, problem_set_name: str):
+    """단건 조회"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    row = cursor.execute(
+        'SELECT * FROM notion_problem_set_status WHERE group_name = ? AND problem_set_name = ?',
+        (group_name, problem_set_name),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_all_notion_problem_set_status():
+    """전체 조회"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    rows = cursor.execute('SELECT * FROM notion_problem_set_status').fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def delete_notion_problem_set_status(group_name: str, problem_set_name: str):
+    """삭제"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        'DELETE FROM notion_problem_set_status WHERE group_name = ? AND problem_set_name = ?',
+        (group_name, problem_set_name),
+    )
+    conn.commit()
+    conn.close()
+
+
+# ==================== Jungol 풀이 캐시 ====================
+
+def upsert_jungol_solved(problem_id: str, handles: list):
+    """특정 문제에 대해 AC 한 사용자 핸들 목록을 캐시에 upsert"""
+    if not handles:
+        return
+    conn = get_connection()
+    cursor = conn.cursor()
+    now = datetime.now().isoformat()
+    for h in handles:
+        cursor.execute('''
+            INSERT OR REPLACE INTO jungol_solved (problem_id, handle, last_seen_at)
+            VALUES (?, ?, ?)
+        ''', (str(problem_id), h, now))
+    conn.commit()
+    conn.close()
+
+
+def get_jungol_solved_handles(problem_id: str):
+    """특정 문제를 AC한 핸들 set 반환"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    rows = cursor.execute(
+        'SELECT handle FROM jungol_solved WHERE problem_id = ?', (str(problem_id),)
+    ).fetchall()
+    conn.close()
+    return {r['handle'] for r in rows}
+
+
+def is_handle_solved_jungol(handle: str, problem_id: str) -> bool:
+    """캐시에서 (handle, problem_id) AC 여부 단건 조회"""
+    if not handle:
+        return False
+    conn = get_connection()
+    cursor = conn.cursor()
+    row = cursor.execute(
+        'SELECT 1 FROM jungol_solved WHERE problem_id = ? AND handle = ? LIMIT 1',
+        (str(problem_id), handle)
+    ).fetchone()
+    conn.close()
+    return row is not None
+
+
+def record_jungol_problem_fetch(problem_id: str, success: bool, user_count: int = 0, error: str = None):
+    """문제 fetch 결과 기록 (성공/실패 + AC 사용자 수)"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    now = datetime.now().isoformat()
+    cursor.execute('''
+        INSERT OR REPLACE INTO jungol_problem_fetch
+        (problem_id, fetched_at, success, user_count, error_message)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (str(problem_id), now, 1 if success else 0, user_count, error))
+    conn.commit()
+    conn.close()
+
+
+def get_jungol_fetch_status(problem_id: str):
+    """문제 fetch 상태 조회"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    row = cursor.execute(
+        'SELECT * FROM jungol_problem_fetch WHERE problem_id = ?', (str(problem_id),)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
