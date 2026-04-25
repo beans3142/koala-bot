@@ -1136,6 +1136,15 @@ def start_problem_set_scheduler(bot_instance):
         logger.info("문제집 과제 자동 갱신 스케줄러 시작")
 
 
+def start_mock_test_scheduler(bot_instance):
+    """모의테스트 자동 갱신 스케줄러 시작 (월요일 01시)"""
+    global _bot_for_mock_test
+    _bot_for_mock_test = bot_instance
+    if not mock_test_auto_update.is_running():
+        mock_test_auto_update.start()
+        logger.info("모의테스트 자동 갱신 스케줄러 시작")
+
+
 class ProblemSetCreateModal(discord.ui.Modal, title="문제집 생성"):
     """문제집 생성 Modal"""
     
