@@ -158,7 +158,7 @@ PLATFORMS = [
 # ──────────────────────────────────────────────
 # 역할 적용 (생성/부여/회수)
 # ──────────────────────────────────────────────
-async def _apply(guild: discord.Guild, member: discord.Member, prefix: str, band):
+async def _apply(guild: discord.Guild, member: discord.Member, prefix: str, band, stats: dict):
     desired_name = None
     color = None
     if band:
@@ -172,7 +172,7 @@ async def _apply(guild: discord.Guild, member: discord.Member, prefix: str, band
         try:
             await member.remove_roles(*stale, reason="티어 역할 갱신")
         except discord.Forbidden:
-            logger.warning(f"[tier_roles] {member} 역할 회수 권한 없음")
+            stats["forbidden"] += 1
         except Exception as e:
             logger.warning(f"[tier_roles] 역할 회수 실패: {e}")
 
@@ -185,7 +185,9 @@ async def _apply(guild: discord.Guild, member: discord.Member, prefix: str, band
             role = await guild.create_role(
                 name=desired_name, colour=discord.Colour(color),
                 mentionable=False, reason="티어 역할 자동 생성")
+            stats["created"] += 1
         except discord.Forbidden:
+            stats["forbidden"] += 1
             logger.warning(f"[tier_roles] 역할 생성 권한 없음: {desired_name}")
             return
         except Exception as e:
@@ -195,40 +197,60 @@ async def _apply(guild: discord.Guild, member: discord.Member, prefix: str, band
     if role not in member.roles:
         try:
             await member.add_roles(role, reason="티어 역할 갱신")
+            stats["assigned"] += 1
         except discord.Forbidden:
+            stats["forbidden"] += 1
             logger.warning(f"[tier_roles] {member} 역할 부여 권한 없음 (봇 역할 위치 확인)")
         except Exception as e:
             logger.warning(f"[tier_roles] 역할 부여 실패: {e}")
 
 
-async def sync_member(guild: discord.Member, member: discord.Member, udb: dict):
+def _merge_handles(uid: str, dbu, jsonusers: dict) -> dict:
+    """DB 핸들 + JSON 핸들(옛 등록 멤버 보완) 병합."""
+    ju = jsonusers.get(uid, {}) or {}
+    dbu = dbu or {}
+    return {
+        "boj_handle": dbu.get("boj_handle") or ju.get("boj_handle"),
+        "codeforces_handle": dbu.get("codeforces_handle") or ju.get("codeforces_handle"),
+        "atcoder_handle": dbu.get("atcoder_handle") or ju.get("atcoder_handle"),
+    }
+
+
+async def sync_member(guild: discord.Guild, member: discord.Member, handles: dict, stats: dict):
     for prefix, handle_key, fetcher in PLATFORMS:
-        handle = udb.get(handle_key)
+        handle = handles.get(handle_key)
         if not handle:
             continue
         band = await fetcher(handle)
-        await _apply(guild, member, prefix, band)
+        if band:
+            stats["tier_found"] += 1
+        else:
+            stats["tier_miss"] += 1
+        await _apply(guild, member, prefix, band, stats)
         await asyncio.sleep(0.2)  # API 레이트리밋 보호
 
 
 async def sync_all(guild: discord.Guild) -> dict:
-    """길드 전체 멤버 티어 역할 갱신. 반환: {processed, skipped}"""
-    processed = 0
+    """길드 전체 멤버 티어 역할 갱신. 상세 통계 반환."""
+    from common.utils import load_data
+    jsonusers = load_data().get("users", {})
+    stats = {"processed": 0, "with_handle": 0, "tier_found": 0,
+             "tier_miss": 0, "created": 0, "assigned": 0, "forbidden": 0}
     for member in guild.members:
         if member.bot:
             continue
-        udb = get_user(str(member.id))
-        if not udb:
+        dbu = get_user(str(member.id))
+        handles = _merge_handles(str(member.id), dbu, jsonusers)
+        if not any(handles.values()):
             continue
-        if not (udb.get("boj_handle") or udb.get("codeforces_handle") or udb.get("atcoder_handle")):
-            continue
+        stats["with_handle"] += 1
         try:
-            await sync_member(guild, member, udb)
-            processed += 1
+            await sync_member(guild, member, handles, stats)
+            stats["processed"] += 1
         except Exception as e:
             logger.error(f"[tier_roles] {member} 갱신 오류: {e}", exc_info=True)
         await asyncio.sleep(0.2)
-    return {"processed": processed}
+    return stats
 
 
 # ──────────────────────────────────────────────
@@ -265,15 +287,29 @@ def setup(bot: commands.Bot):
         """등록된 핸들 기준으로 전체 멤버 티어 역할을 즉시 갱신 (관리자)."""
         msg = await ctx.send("🔄 티어 역할 갱신 중... (멤버 수에 따라 시간이 걸립니다)")
         try:
-            res = await sync_all(ctx.guild)
+            s = await sync_all(ctx.guild)
         except Exception as e:
             logger.error(f"[/티어갱신] 오류: {e}", exc_info=True)
             await msg.edit(content=f"❌ 오류: {e}")
             return
-        await msg.edit(
-            content=f"✅ 티어 역할 갱신 완료 — {res['processed']}명 처리.\n"
-                    f"ⓘ 역할이 안 보이면 봇 역할이 티어 역할보다 위에 있는지, "
-                    f"'역할 관리' 권한이 있는지 확인하세요.")
+
+        lines = [
+            "✅ **티어 역할 갱신 완료**",
+            f"• 핸들 보유 멤버: **{s['with_handle']}명**",
+            f"• 티어 조회 성공/실패: **{s['tier_found']}** / {s['tier_miss']}",
+            f"• 역할 생성: {s['created']} · 부여: {s['assigned']}",
+        ]
+        # 진단 힌트
+        if s["with_handle"] == 0:
+            lines.append("\n⚠️ **핸들 등록된 멤버가 없습니다.** 멤버들이 `/프로필`로 "
+                         "백준/CF/AtCoder ID를 등록해야 티어가 잡힙니다.")
+        if s["forbidden"] > 0:
+            lines.append("\n⚠️ **권한 부족** — 봇에 '역할 관리' 권한 + 봇 역할을 "
+                         "티어 역할보다 **위로** 올려주세요.")
+        if s["with_handle"] > 0 and s["tier_found"] == 0:
+            lines.append("\n⚠️ 티어 조회가 모두 실패했습니다. solved.ac가 서버에서 "
+                         "차단됐을 수 있어요(Cloudflare). CF/AtCoder 핸들은 별도 확인.")
+        await msg.edit(content="\n".join(lines))
 
     @tier_sync_cmd.error
     async def _err(ctx, error):

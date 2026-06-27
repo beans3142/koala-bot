@@ -771,72 +771,6 @@ class RoleRegisterModal(discord.ui.Modal, title="역할 등록 (토큰)"):
 
 # ==================== /역할 부여 — 드롭다운 패널 ====================
 
-class RoleAssignBojModal(discord.ui.Modal, title="역할 부여"):
-    """선택된 역할/사용자에 역할 부여 + 선택적 BOJ 핸들."""
-
-    def __init__(self, role_name, member):
-        super().__init__(timeout=300)
-        self.role_name = role_name
-        self.member = member
-        self.boj_input = discord.ui.TextInput(
-            label="BOJ 핸들 (선택)",
-            placeholder="비워두면 역할만 부여 (핸들은 본인이 /프로필)",
-            required=False, max_length=50,
-        )
-        self.add_item(self.boj_input)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        from common.database import create_or_update_user, add_user_role
-        from common.utils import load_data, save_data, send_bot_notification
-
-        boj = self.boj_input.value.strip() or None
-        role_obj = discord.utils.get(interaction.guild.roles, name=self.role_name)
-        if not role_obj:
-            await interaction.response.send_message(
-                f"❌ '{self.role_name}' 역할을 서버에서 찾을 수 없습니다.", ephemeral=True)
-            return
-        try:
-            await self.member.add_roles(role_obj, reason=f"관리자 역할 부여: {interaction.user}")
-        except discord.Forbidden:
-            await interaction.response.send_message(
-                "❌ 봇에게 역할 부여 권한이 없습니다. 역할 위치/권한을 확인하세요.", ephemeral=True)
-            return
-        except Exception as e:
-            await interaction.response.send_message(f"❌ 역할 부여 중 오류: {e}", ephemeral=True)
-            return
-
-        uid = str(self.member.id)
-        if boj:
-            create_or_update_user(uid, str(self.member), boj)
-        else:
-            create_or_update_user(uid, str(self.member))
-        add_user_role(uid, self.role_name)
-
-        # JSON 호환 유지
-        data = load_data()
-        data.setdefault('users', {})
-        if uid not in data['users']:
-            data['users'][uid] = {'username': str(self.member), 'boj_handle': boj,
-                                  'tistory_links': [], 'roles': [], 'submissions': {}}
-        elif boj:
-            data['users'][uid]['boj_handle'] = boj
-        if self.role_name not in data['users'][uid].setdefault('roles', []):
-            data['users'][uid]['roles'].append(self.role_name)
-        save_data(data)
-
-        await send_bot_notification(
-            interaction.guild, "👤 역할 부여 (관리자)",
-            f"**사용자:** {self.member.mention} ({self.member.display_name})\n"
-            f"**역할:** {self.role_name}" + (f"\n**BOJ:** {boj}" if boj else "") +
-            f"\n**부여자:** {interaction.user.mention}",
-            discord.Color.blue())
-
-        await interaction.response.send_message(
-            f"✅ {self.member.mention} 에게 '{self.role_name}' 역할 부여 완료."
-            + (f" (BOJ: `{boj}`)" if boj else ""),
-            ephemeral=True)
-
-
 class RoleAssignView(discord.ui.View):
     """역할 드롭다운 + 사용자 선택 + 부여 버튼 (ephemeral)."""
 
@@ -896,8 +830,48 @@ class RoleAssignView(discord.ui.View):
         if not (self.selected_role and self.selected_member):
             await interaction.response.send_message("❌ 역할과 사용자를 모두 선택하세요.", ephemeral=True)
             return
-        await interaction.response.send_modal(
-            RoleAssignBojModal(self.selected_role, self.selected_member))
+
+        from common.database import create_or_update_user, add_user_role
+        from common.utils import load_data, save_data, send_bot_notification
+
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        member = self.selected_member
+        role_name = self.selected_role
+        role_obj = discord.utils.get(guild.roles, name=role_name)
+        if not role_obj:
+            await interaction.followup.send(f"❌ '{role_name}' 역할을 서버에서 찾을 수 없습니다.", ephemeral=True)
+            return
+        try:
+            await member.add_roles(role_obj, reason=f"관리자 역할 부여: {interaction.user}")
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "❌ 봇에게 역할 부여 권한이 없습니다. (봇 역할 위치/권한 확인)", ephemeral=True)
+            return
+        except Exception as e:
+            await interaction.followup.send(f"❌ 역할 부여 오류: {e}", ephemeral=True)
+            return
+
+        uid = str(member.id)
+        create_or_update_user(uid, str(member))
+        add_user_role(uid, role_name)
+        data = load_data()
+        data.setdefault('users', {})
+        if uid not in data['users']:
+            data['users'][uid] = {'username': str(member), 'boj_handle': None,
+                                  'tistory_links': [], 'roles': [], 'submissions': {}}
+        if role_name not in data['users'][uid].setdefault('roles', []):
+            data['users'][uid]['roles'].append(role_name)
+        save_data(data)
+
+        await send_bot_notification(
+            guild, "👤 역할 부여 (관리자)",
+            f"**사용자:** {member.mention} ({member.display_name})\n"
+            f"**역할:** {role_name}\n**부여자:** {interaction.user.mention}",
+            discord.Color.blue())
+        await interaction.followup.send(
+            f"✅ {member.mention} 에게 '{role_name}' 역할 부여 완료. "
+            f"(OJ 핸들은 본인이 `/프로필`에서)", ephemeral=True)
 
 
 class RoleAssignEntryView(discord.ui.View):
