@@ -40,12 +40,14 @@ class KoalaBot(commands.Bot):
         from domain.channel import register_group_weekly_views, register_all_assignment_status_views
         from domain.link_submission import register_link_submission_views
         from domain.notion_problem_set import register_notion_problem_set_refresh_view
+        from domain.weekly_test import register_weekly_test_views
 
         register_persistent_view(self)
         register_group_weekly_views(self)
         register_link_submission_views(self)
         register_all_assignment_status_views(self)
         register_notion_problem_set_refresh_view(self)
+        register_weekly_test_views(self)
         print("[OK] Persistent views 등록 완료")
 
         # HTTP 서버 시작 (Jungol userscript 가 POST 하는 endpoint 호스팅)
@@ -80,6 +82,7 @@ async def on_ready():
     from domain.link_submission import start_link_submission_scheduler
     from domain.problem_set import start_problem_set_scheduler, start_mock_test_scheduler
     from domain.notion_problem_set import start_notion_problem_set_scheduler
+    from domain.weekly_test import start_weekly_test_scheduler
 
     start_weekly_status_scheduler(bot)
     start_group_weekly_scheduler(bot)
@@ -87,6 +90,7 @@ async def on_ready():
     start_problem_set_scheduler(bot)
     start_mock_test_scheduler(bot)
     start_notion_problem_set_scheduler(bot)
+    start_weekly_test_scheduler(bot)
 
 @bot.event
 async def on_command_error(ctx, error):
@@ -112,7 +116,7 @@ async def on_interaction(interaction: discord.Interaction):
 # 모듈 로드
 def load_modules():
     """모든 모듈 로드"""
-    from domain import role, channel, study, user, link_submission, problem_set, notion_sync, notion_problem_set
+    from domain import role, channel, study, user, link_submission, problem_set, notion_sync, notion_problem_set, weekly_test
     from common import help
 
     role.setup(bot)
@@ -124,6 +128,7 @@ def load_modules():
     problem_set.setup(bot)
     notion_sync.setup(bot)
     notion_problem_set.setup(bot)
+    weekly_test.setup(bot)
 
 # 봇 실행
 if __name__ == '__main__':

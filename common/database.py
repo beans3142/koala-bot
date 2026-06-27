@@ -267,6 +267,25 @@ def init_database():
         )
     ''')
 
+    # 주간테스트 (CF 대회 가상참가 기반 채점)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS weekly_test_status (
+            group_name TEXT,
+            contest_id TEXT,
+            role_name TEXT,
+            threshold INTEGER DEFAULT 2,
+            channel_id TEXT,
+            message_id TEXT,
+            week_start TEXT,
+            week_end TEXT,
+            settle_at TEXT,
+            settled INTEGER DEFAULT 0,
+            last_updated TEXT,
+            created_at TEXT,
+            PRIMARY KEY (group_name, contest_id)
+        )
+    ''')
+
     conn.commit()
     conn.close()
 
@@ -1506,6 +1525,75 @@ def delete_notion_problem_set_status(group_name: str, problem_set_name: str):
     cursor.execute(
         'DELETE FROM notion_problem_set_status WHERE group_name = ? AND problem_set_name = ?',
         (group_name, problem_set_name),
+    )
+    conn.commit()
+    conn.close()
+
+
+# ==================== 주간테스트 (CF 대회 가상참가) ====================
+
+def save_weekly_test_status(
+    group_name: str,
+    contest_id: str,
+    role_name: str,
+    threshold: int,
+    channel_id: str,
+    message_id: str,
+    week_start: str,
+    week_end: str,
+    settle_at: str,
+    last_updated: str,
+    settled: int = 0,
+):
+    """주간테스트 status upsert (PRIMARY KEY: group_name, contest_id).
+    created_at 은 최초 1회만 보존."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    now = datetime.now().isoformat()
+    existing = cursor.execute(
+        'SELECT created_at FROM weekly_test_status WHERE group_name = ? AND contest_id = ?',
+        (group_name, str(contest_id)),
+    ).fetchone()
+    created_at = existing['created_at'] if existing else now
+    cursor.execute('''
+        INSERT OR REPLACE INTO weekly_test_status
+        (group_name, contest_id, role_name, threshold, channel_id, message_id,
+         week_start, week_end, settle_at, settled, last_updated, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (group_name, str(contest_id), role_name, threshold, channel_id, message_id,
+          week_start, week_end, settle_at, settled, last_updated, created_at))
+    conn.commit()
+    conn.close()
+
+
+def get_weekly_test_status(group_name: str, contest_id: str):
+    """단건 조회"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    row = cursor.execute(
+        'SELECT * FROM weekly_test_status WHERE group_name = ? AND contest_id = ?',
+        (group_name, str(contest_id)),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_all_weekly_test_status():
+    """전체 조회"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    rows = cursor.execute('SELECT * FROM weekly_test_status').fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def delete_weekly_test_status(group_name: str, contest_id: str):
+    """삭제"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        'DELETE FROM weekly_test_status WHERE group_name = ? AND contest_id = ?',
+        (group_name, str(contest_id)),
     )
     conn.commit()
     conn.close()
