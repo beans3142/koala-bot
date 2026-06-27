@@ -83,6 +83,7 @@ async def on_ready():
     from domain.problem_set import start_problem_set_scheduler, start_mock_test_scheduler
     from domain.notion_problem_set import start_notion_problem_set_scheduler
     from domain.weekly_test import start_weekly_test_scheduler
+    from domain.tier_roles import start_tier_role_scheduler
 
     start_weekly_status_scheduler(bot)
     start_group_weekly_scheduler(bot)
@@ -91,6 +92,7 @@ async def on_ready():
     start_mock_test_scheduler(bot)
     start_notion_problem_set_scheduler(bot)
     start_weekly_test_scheduler(bot)
+    start_tier_role_scheduler(bot)
 
 @bot.event
 async def on_command_error(ctx, error):
@@ -127,7 +129,7 @@ async def on_interaction(interaction: discord.Interaction):
 # 모듈 로드
 def load_modules():
     """모든 모듈 로드"""
-    from domain import role, channel, study, user, link_submission, problem_set, notion_sync, notion_problem_set, weekly_test
+    from domain import role, channel, study, user, link_submission, problem_set, notion_sync, notion_problem_set, weekly_test, tier_roles
     from common import help
 
     role.setup(bot)
@@ -140,6 +142,7 @@ def load_modules():
     notion_sync.setup(bot)
     notion_problem_set.setup(bot)
     weekly_test.setup(bot)
+    tier_roles.setup(bot)
 
 # 봇 실행
 if __name__ == '__main__':
