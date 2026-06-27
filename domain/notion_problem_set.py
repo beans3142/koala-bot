@@ -431,9 +431,52 @@ class NotionProblemSetRefreshView(discord.ui.View):
             await interaction.followup.send("⚠️ 갱신 실행되지 않음 (기간 외 또는 메시지 누락)", ephemeral=True)
 
 
+class NotionSetupButtonView(discord.ui.View):
+    """`/문제집풀이현황` 진입 — 영구 버튼. 누르면 본인만 보이는(ephemeral) 설정창."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="설정 열기 (본인만)", emoji="⚙️", style=discord.ButtonStyle.primary,
+                       custom_id="notion_ps_setup_open")
+    async def open(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ 관리자만 설정할 수 있습니다.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            problem_sets = await sync_problem_sets()
+        except Exception as e:
+            logger.error(f"[문제집풀이현황] 노션 fetch 실패: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ 노션 fetch 실패: {e}", ephemeral=True)
+            return
+        if not problem_sets:
+            await interaction.followup.send(
+                "⚠️ 노션에 문제집(L4 자식 페이지)이 없습니다. 문제집 페이지 아래에 자식 페이지를 만들고 OJ 링크를 작성해주세요.",
+                ephemeral=True)
+            return
+        data = load_data()
+        studies = data.get('studies', {})
+        groups = [(rn, sd.get('group_name', rn)) for rn, sd in studies.items()]
+        groups.sort(key=lambda x: x[1])
+        if not groups:
+            await interaction.followup.send(
+                "❌ 등록된 그룹이 없습니다. `/그룹 생성`으로 먼저 그룹을 만들어주세요.", ephemeral=True)
+            return
+        view = NotionProblemSetSetupView(interaction.user, problem_sets, groups)
+        await interaction.followup.send(
+            content=(
+                f"📚 노션 문제집 풀이현황 등록\n"
+                f"문제집 {len(problem_sets)}개 · 그룹 {len(groups)}개 발견\n"
+                f"문제집/그룹/채널을 모두 선택한 후 **전송**을 누르세요."
+            ),
+            view=view, ephemeral=True)
+
+
 def register_notion_problem_set_refresh_view(bot):
     """봇 시작 시 persistent view 등록"""
     bot.add_view(NotionProblemSetRefreshView())
+    bot.add_view(NotionSetupButtonView())
 
 
 # ==================== 등록 폼 (셀렉트 3개 + 페이지네이션) ====================
@@ -716,47 +759,11 @@ def setup(bot: commands.Bot):
     @bot.command(name='문제집풀이현황')
     @commands.has_permissions(administrator=True)
     async def open_setup(ctx: commands.Context):
-        """노션 문제집 풀이현황 등록 (관리자 전용)"""
-        loading = await ctx.send("🔄 노션에서 문제집 목록을 가져오는 중...")
-
-        # 노션에서 문제집 fetch
-        try:
-            problem_sets = await sync_problem_sets()
-        except Exception as e:
-            logger.error(f"[/문제집풀이현황] 노션 fetch 실패: {e}", exc_info=True)
-            await loading.edit(content=f"❌ 노션 fetch 실패: {e}")
-            return
-
-        if not problem_sets:
-            await loading.edit(
-                content=(
-                    "⚠️ 노션에 문제집(L4 자식 페이지)이 없습니다.\n"
-                    "문제집 페이지 아래에 자식 페이지를 만들고 OJ 링크를 작성해주세요."
-                )
-            )
-            return
-
-        # 그룹 목록
-        data = load_data()
-        studies = data.get('studies', {})
-        groups = []
-        for role_name, study_data in studies.items():
-            group_name = study_data.get('group_name', role_name)
-            groups.append((role_name, group_name))
-        groups.sort(key=lambda x: x[1])
-
-        if not groups:
-            await loading.edit(content="❌ 등록된 그룹이 없습니다. `/그룹 생성`으로 먼저 그룹을 만들어주세요.")
-            return
-
-        view = NotionProblemSetSetupView(ctx.author, problem_sets, groups)
-        await loading.edit(
-            content=(
-                f"📚 노션 문제집 풀이현황 등록\n"
-                f"문제집 {len(problem_sets)}개 · 그룹 {len(groups)}개 발견\n"
-                f"아래에서 문제집/그룹/채널을 모두 선택한 후 **전송** 버튼을 누르세요."
-            ),
-            view=view,
+        """노션 문제집 풀이현황 등록 (관리자 전용) — 영구 버튼 → 본인만 보이는 설정창"""
+        await ctx.send(
+            "📚 노션 문제집 풀이현황 설정 — 아래 버튼을 누르면 본인만 보이는 설정창이 열립니다. "
+            "(버튼은 영구적이라 재시작 후에도 동작)",
+            view=NotionSetupButtonView(),
         )
 
     @open_setup.error
