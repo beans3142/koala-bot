@@ -229,10 +229,25 @@ def setup(bot):
 
     @role_group.command(name='부여')
     @commands.has_permissions(administrator=True)
-    async def role_assign(ctx, role_name: str, discord_id: str, boj_handle: str):
-        """디스코드 사용자에게 역할과 BOJ 핸들을 부여 (관리자 전용)
-        사용법: /역할 부여 <역할명> <discord_id 또는 멘션> <boj_handle>
+    async def role_assign(ctx, role_name: str = None, discord_id: str = None, boj_handle: str = None):
+        """디스코드 사용자에게 역할을 부여 (관리자 전용)
+        - 인자 없이: 역할/사용자 드롭다운 패널 (권장)
+        - /역할 부여 <역할명> <discord_id 또는 멘션> <boj_handle>: 직접 부여
         """
+        # 인자 없으면 드롭다운 패널 진입 버튼 (본인만 보이는 ephemeral)
+        if not role_name:
+            await ctx.send(
+                "🎫 역할 부여 — 아래 버튼을 누르면 본인만 보이는 설정창이 열립니다. "
+                "(역할·사용자를 드롭다운으로 선택 · 버튼 영구)",
+                view=RoleAssignEntryView())
+            return
+        # 일부 인자만 있으면 사용법 안내
+        if not (role_name and discord_id and boj_handle):
+            await ctx.send(
+                "❌ 사용법: `/역할 부여` (드롭다운) 또는 `/역할 부여 <역할> <id> <boj>`",
+                delete_after=10)
+            return
+
         # 역할이 등록되어 있는지 확인
         data = load_data()
         if role_name not in data.get('role_tokens', {}):
@@ -615,6 +630,7 @@ def register_persistent_view(bot):
     try:
         view = RoleRegisterButtonView()
         bot.add_view(view)
+        bot.add_view(RoleAssignEntryView())
         print(f"[OK] Persistent view 등록 완료 (custom_id: role_register_button)")
         logger.info(f"Persistent view 등록 완료 (custom_id: role_register_button)")
     except Exception as e:
@@ -752,6 +768,161 @@ class RoleRegisterModal(discord.ui.Modal, title="역할 등록 (토큰)"):
                 "❌ 봇에게 역할을 부여할 권한이 없습니다. 서버 관리자에게 문의해주세요.", ephemeral=True)
         except Exception as e:
             await interaction.response.send_message(f"❌ 오류가 발생했습니다: {str(e)}", ephemeral=True)
+
+# ==================== /역할 부여 — 드롭다운 패널 ====================
+
+class RoleAssignBojModal(discord.ui.Modal, title="역할 부여"):
+    """선택된 역할/사용자에 역할 부여 + 선택적 BOJ 핸들."""
+
+    def __init__(self, role_name, member):
+        super().__init__(timeout=300)
+        self.role_name = role_name
+        self.member = member
+        self.boj_input = discord.ui.TextInput(
+            label="BOJ 핸들 (선택)",
+            placeholder="비워두면 역할만 부여 (핸들은 본인이 /프로필)",
+            required=False, max_length=50,
+        )
+        self.add_item(self.boj_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        from common.database import create_or_update_user, add_user_role
+        from common.utils import load_data, save_data, send_bot_notification
+
+        boj = self.boj_input.value.strip() or None
+        role_obj = discord.utils.get(interaction.guild.roles, name=self.role_name)
+        if not role_obj:
+            await interaction.response.send_message(
+                f"❌ '{self.role_name}' 역할을 서버에서 찾을 수 없습니다.", ephemeral=True)
+            return
+        try:
+            await self.member.add_roles(role_obj, reason=f"관리자 역할 부여: {interaction.user}")
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "❌ 봇에게 역할 부여 권한이 없습니다. 역할 위치/권한을 확인하세요.", ephemeral=True)
+            return
+        except Exception as e:
+            await interaction.response.send_message(f"❌ 역할 부여 중 오류: {e}", ephemeral=True)
+            return
+
+        uid = str(self.member.id)
+        if boj:
+            create_or_update_user(uid, str(self.member), boj)
+        else:
+            create_or_update_user(uid, str(self.member))
+        add_user_role(uid, self.role_name)
+
+        # JSON 호환 유지
+        data = load_data()
+        data.setdefault('users', {})
+        if uid not in data['users']:
+            data['users'][uid] = {'username': str(self.member), 'boj_handle': boj,
+                                  'tistory_links': [], 'roles': [], 'submissions': {}}
+        elif boj:
+            data['users'][uid]['boj_handle'] = boj
+        if self.role_name not in data['users'][uid].setdefault('roles', []):
+            data['users'][uid]['roles'].append(self.role_name)
+        save_data(data)
+
+        await send_bot_notification(
+            interaction.guild, "👤 역할 부여 (관리자)",
+            f"**사용자:** {self.member.mention} ({self.member.display_name})\n"
+            f"**역할:** {self.role_name}" + (f"\n**BOJ:** {boj}" if boj else "") +
+            f"\n**부여자:** {interaction.user.mention}",
+            discord.Color.blue())
+
+        await interaction.response.send_message(
+            f"✅ {self.member.mention} 에게 '{self.role_name}' 역할 부여 완료."
+            + (f" (BOJ: `{boj}`)" if boj else ""),
+            ephemeral=True)
+
+
+class RoleAssignView(discord.ui.View):
+    """역할 드롭다운 + 사용자 선택 + 부여 버튼 (ephemeral)."""
+
+    def __init__(self, author, role_names):
+        super().__init__(timeout=600)
+        self.author = author
+        self.selected_role = None
+        self.selected_member = None
+
+        opts = ([discord.SelectOption(label=r, value=r) for r in role_names[:25]]
+                or [discord.SelectOption(label="(역할 없음)", value="__none__")])
+        self.role_select = discord.ui.Select(placeholder="역할 선택", options=opts, row=0)
+        self.role_select.callback = self._on_role
+        self.add_item(self.role_select)
+
+        self.user_select = discord.ui.UserSelect(
+            placeholder="사용자 선택", min_values=1, max_values=1, row=1)
+        self.user_select.callback = self._on_user
+        self.add_item(self.user_select)
+
+        self.assign_btn = discord.ui.Button(
+            label="부여", emoji="✅", style=discord.ButtonStyle.success, disabled=True, row=2)
+        self.assign_btn.callback = self._on_assign
+        self.add_item(self.assign_btn)
+
+    async def _check(self, interaction):
+        if interaction.user.id != self.author.id:
+            await interaction.response.send_message("❌ 본인만 사용할 수 있습니다.", ephemeral=True)
+            return False
+        return True
+
+    def _refresh(self):
+        self.assign_btn.disabled = not (self.selected_role and self.selected_member)
+
+    async def _on_role(self, interaction):
+        if not await self._check(interaction):
+            return
+        v = self.role_select.values[0]
+        if v == "__none__":
+            return
+        self.selected_role = v
+        for o in self.role_select.options:
+            o.default = (o.value == v)
+        self._refresh()
+        await interaction.response.edit_message(view=self)
+
+    async def _on_user(self, interaction):
+        if not await self._check(interaction):
+            return
+        self.selected_member = self.user_select.values[0]
+        self._refresh()
+        await interaction.response.edit_message(view=self)
+
+    async def _on_assign(self, interaction):
+        if not await self._check(interaction):
+            return
+        if not (self.selected_role and self.selected_member):
+            await interaction.response.send_message("❌ 역할과 사용자를 모두 선택하세요.", ephemeral=True)
+            return
+        await interaction.response.send_modal(
+            RoleAssignBojModal(self.selected_role, self.selected_member))
+
+
+class RoleAssignEntryView(discord.ui.View):
+    """`/역할 부여` 진입 — 영구 버튼 → 본인만 보이는 역할/사용자 셀렉트."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="역할 부여 설정 (본인만)", emoji="⚙️",
+                       style=discord.ButtonStyle.primary, custom_id="role_assign_open")
+    async def open(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ 관리자만 사용할 수 있습니다.", ephemeral=True)
+            return
+        from common.utils import load_data
+        data = load_data()
+        role_names = list(data.get('role_tokens', {}).keys())
+        if not role_names:
+            await interaction.response.send_message(
+                "❌ 등록된 역할이 없습니다. `/역할 생성`으로 먼저 만들어주세요.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            content="🎫 역할 부여 — 역할과 사용자를 선택하고 **부여**를 누르세요.",
+            view=RoleAssignView(interaction.user, role_names), ephemeral=True)
+
 
 # ==================== 주간 문제풀이 현황 스케줄 작업 ====================
 

@@ -95,12 +95,23 @@ async def on_ready():
 @bot.event
 async def on_command_error(ctx, error):
     logger.error(f'명령어 오류: {ctx.author} - {ctx.message.content} - {str(error)}')
+    # 에러 안내는 채널을 어지럽히지 않도록 잠시 후 자동 삭제(사실상 본인 확인용)
     if isinstance(error, commands.CommandNotFound):
-        await ctx.send("❌ 알 수 없는 명령어입니다. `/도움말`을 입력해주세요.")
+        msg = "❌ 알 수 없는 명령어입니다. `/도움말`을 입력해주세요."
     elif isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send(f"❌ 명령어에 필요한 인자가 누락되었습니다. `/도움말`을 확인해주세요.")
+        msg = "❌ 명령어에 필요한 인자가 누락되었습니다. `/도움말`을 확인해주세요."
+    elif isinstance(error, commands.MissingPermissions):
+        msg = "❌ 관리자 권한이 필요합니다."
     else:
-        await ctx.send(f"❌ 오류가 발생했습니다: {str(error)}")
+        msg = f"❌ 오류가 발생했습니다: {str(error)}"
+    try:
+        await ctx.send(msg, delete_after=10)
+        # 명령어 메시지도 정리 (권한 있을 때만)
+        await ctx.message.delete(delay=10)
+    except discord.HTTPException:
+        pass
+    except discord.Forbidden:
+        pass
 
 @bot.event
 async def on_interaction(interaction: discord.Interaction):
