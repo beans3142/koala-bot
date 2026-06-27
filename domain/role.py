@@ -384,58 +384,71 @@ def setup(bot):
         else:
             await loading.edit(content=None, embed=embed)
 
-    @role_group.command(name='주간현황설정')
-    @commands.has_permissions(administrator=True)
-    async def role_weekly_status_setup(ctx, *, role_name: str):
-        """주간 문제풀이 현황 메시지 설정 (관리자 전용)"""
-        # 역할이 등록되어 있는지 확인
-        data = load_data()
-        if role_name not in data.get('role_tokens', {}):
-            await ctx.send(f"❌ '{role_name}' 역할이 등록되지 않았습니다.")
-            return
-        
-        # 이번 주 월요일 계산
+    async def _do_weekly_setup(channel, role_name, bot):
         today = datetime.now()
-        days_since_monday = today.weekday()
-        monday = today - timedelta(days=days_since_monday)
-        monday = monday.replace(hour=0, minute=0, second=0, microsecond=0)
+        monday = (today - timedelta(days=today.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
         sunday = monday + timedelta(days=6, hours=23, minutes=59, seconds=59)
-        
-        # 초기 임베드 생성
         embed = discord.Embed(
             title=f"📊 '{role_name}' 주간 문제풀이 현황",
             description=f"기간: {monday.strftime('%Y-%m-%d')} ~ {sunday.strftime('%Y-%m-%d')} (월~일)\n초기화 중...",
-            color=discord.Color.blue()
-        )
-        
-        message = await ctx.send(embed=embed)
-        
-        # 메시지 정보 저장
-        save_weekly_status_message(role_name, str(ctx.channel.id), str(message.id), monday.strftime('%Y-%m-%d'))
-        
-        # 즉시 업데이트
-        await update_weekly_status_for_role(role_name, ctx.bot)
-        
-        await ctx.send(f"✅ '{role_name}' 역할의 주간 문제풀이 현황 메시지가 설정되었습니다.\n📅 매시간(12시~00시) 자동 업데이트됩니다.\n📅 매주 월요일 00시에 새 주간 현황이 시작됩니다.")
+            color=discord.Color.blue())
+        message = await channel.send(embed=embed)
+        save_weekly_status_message(role_name, str(channel.id), str(message.id), monday.strftime('%Y-%m-%d'))
+        await update_weekly_status_for_role(role_name, bot)
+
+    async def _weekly_setup_action(interaction, role_name):
+        await interaction.response.defer(ephemeral=True)
+        await _do_weekly_setup(interaction.channel, role_name, interaction.client)
+        await interaction.followup.send(
+            f"✅ '{role_name}' 주간현황 보드를 이 채널에 생성했습니다. 매시간 자동 갱신됩니다.", ephemeral=True)
+
+    @role_group.command(name='주간현황설정')
+    @commands.has_permissions(administrator=True)
+    async def role_weekly_status_setup(ctx, *, role_name: str = None):
+        """주간 문제풀이 현황 보드 설정 (관리자). 인자 없으면 드롭다운."""
+        if role_name is None:
+            await ctx.send("📊 주간현황을 만들 역할을 선택하세요 (이 채널에 생성됩니다):",
+                           view=RolePickerView(ctx.author, _registered_role_names(), _weekly_setup_action))
+            return
+        if role_name not in load_data().get('role_tokens', {}):
+            await ctx.send(f"❌ '{role_name}' 역할이 등록되지 않았습니다.")
+            return
+        await _do_weekly_setup(ctx.channel, role_name, ctx.bot)
+        await ctx.send(f"✅ '{role_name}' 역할의 주간 문제풀이 현황 메시지가 설정되었습니다. 매시간 자동 갱신됩니다.")
+
+    async def _weekly_refresh_action(interaction, role_name):
+        await interaction.response.defer(ephemeral=True)
+        await update_weekly_status_for_role(role_name, interaction.client)
+        await interaction.followup.send(f"✅ '{role_name}' 주간 현황을 갱신했습니다.", ephemeral=True)
 
     @role_group.command(name='주간현황갱신')
     @commands.has_permissions(administrator=True)
-    async def role_weekly_status_refresh(ctx, *, role_name: str):
-        """주간 문제풀이 현황 메시지 수동 갱신 (관리자 전용)"""
-        # 역할이 등록되어 있는지 확인
-        data = load_data()
-        if role_name not in data.get('role_tokens', {}):
+    async def role_weekly_status_refresh(ctx, *, role_name: str = None):
+        """주간 현황 수동 갱신 (관리자). 인자 없으면 드롭다운."""
+        if role_name is None:
+            await ctx.send("🔄 갱신할 역할을 선택하세요:",
+                           view=RolePickerView(ctx.author, _registered_role_names(), _weekly_refresh_action))
+            return
+        if role_name not in load_data().get('role_tokens', {}):
             await ctx.send(f"❌ '{role_name}' 역할이 등록되지 않았습니다.")
             return
-        
         await ctx.send(f"🔄 '{role_name}' 역할의 주간 현황을 갱신하는 중...")
         await update_weekly_status_for_role(role_name, ctx.bot)
         await ctx.send(f"✅ '{role_name}' 역할의 주간 현황이 갱신되었습니다.")
 
+    async def _delete_action(interaction, role_name):
+        await interaction.response.send_message(
+            f"⚠️ '{role_name}' 역할을 삭제할까요? 역할·토큰이 사라지고 멤버에게서도 제거됩니다.",
+            view=RoleDeleteConfirmView(interaction.user, role_name), ephemeral=True)
+
     @role_group.command(name='삭제')
     @commands.has_permissions(administrator=True)
-    async def role_delete(ctx, *, role_name: str):
-        """역할 삭제 (관리자 전용)"""
+    async def role_delete(ctx, *, role_name: str = None):
+        """역할 삭제 (관리자). 인자 없으면 드롭다운 → 확인."""
+        if role_name is None:
+            await ctx.send("🗑️ 삭제할 역할을 선택하세요:",
+                           view=RolePickerView(ctx.author, _registered_role_names(), _delete_action))
+            return
         # 역할 찾기
         role = discord.utils.get(ctx.guild.roles, name=role_name)
         if not role:
@@ -469,10 +482,15 @@ def setup(bot):
 
     @role_group.command(name='제거')
     @commands.has_permissions(administrator=True)
-    async def role_remove_member(ctx, role_name: str, boj_handle: str):
-        """특정 역할에서 BOJ 핸들로 멤버 제거 (관리자 전용)
-        사용법: /역할 제거 <역할명> <boj_handle>
-        """
+    async def role_remove_member(ctx, role_name: str = None, boj_handle: str = None):
+        """역할에서 멤버 제거 (관리자). 인자 없으면 역할+사용자 드롭다운."""
+        if role_name is None:
+            await ctx.send("🗑️ 역할에서 제거할 멤버를 선택하세요:",
+                           view=RoleRemoveView(ctx.author, _registered_role_names()))
+            return
+        if not boj_handle:
+            await ctx.send("❌ 사용법: `/역할 제거` (드롭다운) 또는 `/역할 제거 <역할> <boj>`", delete_after=10)
+            return
         # 역할 등록 여부 확인
         data = load_data()
         if role_name not in data.get('role_tokens', {}):
@@ -511,10 +529,15 @@ def setup(bot):
 
     @role_group.command(name='제거디스코드')
     @commands.has_permissions(administrator=True)
-    async def role_remove_member_by_discord_id(ctx, role_name: str, discord_id: str):
-        """특정 역할에서 디스코드 ID로 멤버 제거 (관리자 전용)
-        사용법: /역할 제거디스코드 <역할명> <discord_id>
-        """
+    async def role_remove_member_by_discord_id(ctx, role_name: str = None, discord_id: str = None):
+        """역할에서 멤버 제거 (관리자). 인자 없으면 역할+사용자 드롭다운(제거와 동일)."""
+        if role_name is None:
+            await ctx.send("🗑️ 역할에서 제거할 멤버를 선택하세요:",
+                           view=RoleRemoveView(ctx.author, _registered_role_names()))
+            return
+        if not discord_id:
+            await ctx.send("❌ 사용법: `/역할 제거디스코드` (드롭다운) 또는 `/역할 제거디스코드 <역할> <id>`", delete_after=10)
+            return
         # 역할 등록 여부 확인
         data = load_data()
         if role_name not in data.get('role_tokens', {}):
@@ -911,6 +934,119 @@ class RolePickerView(discord.ui.View):
 
 def _registered_role_names():
     return list(load_data().get('role_tokens', {}).keys())
+
+
+class RoleRemoveView(discord.ui.View):
+    """역할 + 사용자 드롭다운으로 멤버를 역할에서 제거 (제거/제거디스코드 통합)."""
+
+    def __init__(self, author, role_names):
+        super().__init__(timeout=600)
+        self.author = author
+        self.selected_role = None
+        self.selected_member = None
+        opts = ([discord.SelectOption(label=r, value=r) for r in role_names[:25]]
+                or [discord.SelectOption(label="(역할 없음)", value="__none__")])
+        self.role_select = discord.ui.Select(placeholder="역할 선택", options=opts, row=0)
+        self.role_select.callback = self._on_role
+        self.add_item(self.role_select)
+        self.user_select = discord.ui.UserSelect(
+            placeholder="제거할 사용자 선택", min_values=1, max_values=1, row=1)
+        self.user_select.callback = self._on_user
+        self.add_item(self.user_select)
+        self.btn = discord.ui.Button(label="제거", emoji="🗑️",
+                                     style=discord.ButtonStyle.danger, disabled=True, row=2)
+        self.btn.callback = self._on_remove
+        self.add_item(self.btn)
+
+    async def _check(self, interaction):
+        if interaction.user.id != self.author.id:
+            await interaction.response.send_message("❌ 본인만 사용할 수 있습니다.", ephemeral=True)
+            return False
+        return True
+
+    def _refresh(self):
+        self.btn.disabled = not (self.selected_role and self.selected_member)
+
+    async def _on_role(self, interaction):
+        if not await self._check(interaction):
+            return
+        v = self.role_select.values[0]
+        if v == "__none__":
+            return
+        self.selected_role = v
+        for o in self.role_select.options:
+            o.default = (o.value == v)
+        self._refresh()
+        await interaction.response.edit_message(view=self)
+
+    async def _on_user(self, interaction):
+        if not await self._check(interaction):
+            return
+        self.selected_member = self.user_select.values[0]
+        self._refresh()
+        await interaction.response.edit_message(view=self)
+
+    async def _on_remove(self, interaction):
+        if not await self._check(interaction):
+            return
+        if not (self.selected_role and self.selected_member):
+            await interaction.response.send_message("❌ 역할과 사용자를 모두 선택하세요.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        member = self.selected_member
+        role_name = self.selected_role
+        role_obj = discord.utils.get(interaction.guild.roles, name=role_name)
+        if role_obj and role_obj in member.roles:
+            try:
+                await member.remove_roles(role_obj, reason=f"관리자 제거: {interaction.user}")
+            except discord.Forbidden:
+                await interaction.followup.send("❌ 봇에게 역할 제거 권한이 없습니다.", ephemeral=True)
+                return
+            except Exception as e:
+                await interaction.followup.send(f"❌ 제거 오류: {e}", ephemeral=True)
+                return
+        remove_user_role(str(member.id), role_name)
+        await interaction.followup.send(
+            f"✅ {member.mention} 를 '{role_name}' 역할에서 제거했습니다.", ephemeral=True)
+
+
+class RoleDeleteConfirmView(discord.ui.View):
+    """역할 삭제 확인 (드롭다운 선택 후 확인 버튼)."""
+
+    def __init__(self, author, role_name):
+        super().__init__(timeout=120)
+        self.author = author
+        self.role_name = role_name
+
+    @discord.ui.button(label="삭제 확인", emoji="🗑️", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.author.id:
+            await interaction.response.send_message("❌ 본인만 사용할 수 있습니다.", ephemeral=True)
+            return
+        guild = interaction.guild
+        role = discord.utils.get(guild.roles, name=self.role_name)
+        if not role:
+            await interaction.response.edit_message(
+                content=f"❌ '{self.role_name}' 역할을 서버에서 찾을 수 없습니다.", view=None)
+            return
+        bot_member = guild.get_member(interaction.client.user.id)
+        if bot_member and role >= bot_member.top_role:
+            await interaction.response.edit_message(
+                content="❌ 봇 역할보다 위에 있는 역할은 삭제할 수 없습니다.", view=None)
+            return
+        try:
+            await role.delete(reason=f"봇에 의해 삭제됨 - {interaction.user}")
+            data = load_data()
+            if self.role_name in data.get('role_tokens', {}):
+                del data['role_tokens'][self.role_name]
+                save_data(data)
+            await interaction.response.edit_message(
+                content=f"✅ '{self.role_name}' 역할이 삭제되었습니다.", view=None)
+        except discord.Forbidden:
+            await interaction.response.edit_message(
+                content="❌ 봇에게 역할 삭제 권한이 없습니다.", view=None)
+        except Exception as e:
+            await interaction.response.edit_message(content=f"❌ 오류: {e}", view=None)
 
 
 # ==================== 주간 문제풀이 현황 스케줄 작업 ====================
