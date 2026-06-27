@@ -1420,9 +1420,69 @@ def start_group_weekly_scheduler(bot):
         group_weekly_auto_update.start()
     if not all_assignment_auto_create.is_running():
         all_assignment_auto_create.start()
+class GroupPickerView(discord.ui.View):
+    """그룹을 드롭다운으로 골라 action(interaction, role_name, group_name) 실행하는 범용 패널."""
+
+    def __init__(self, author, studies, action, placeholder="그룹 선택"):
+        super().__init__(timeout=300)
+        self.author = author
+        self.action = action
+        self._map = {}
+        opts = []
+        for rn, sd in list(studies.items())[:25]:
+            gn = sd.get('group_name', rn) if isinstance(sd, dict) else rn
+            self._map[rn] = gn
+            opts.append(discord.SelectOption(label=gn, value=rn, description=f"역할: {rn}"))
+        if not opts:
+            opts = [discord.SelectOption(label="(그룹 없음)", value="__none__")]
+        self.sel = discord.ui.Select(placeholder=placeholder, options=opts)
+        self.sel.callback = self._cb
+        self.add_item(self.sel)
+
+    async def _cb(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author.id:
+            await interaction.response.send_message("❌ 본인만 사용할 수 있습니다.", ephemeral=True)
+            return
+        v = self.sel.values[0]
+        if v == "__none__":
+            await interaction.response.send_message("❌ 등록된 그룹이 없습니다.", ephemeral=True)
+            return
+        await self.action(interaction, v, self._map.get(v, v))
+
+
+class GroupRenameModal(discord.ui.Modal, title="그룹 이름 수정"):
+    def __init__(self, role_name, old_group_name):
+        super().__init__(timeout=300)
+        self.role_name = role_name
+        self.old = old_group_name
+        self.new_input = discord.ui.TextInput(
+            label="새 그룹 이름", default=old_group_name, max_length=100, required=True)
+        self.add_item(self.new_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        new_name = self.new_input.value.strip()
+        data = load_data()
+        if self.role_name not in data.get('studies', {}):
+            await interaction.response.send_message(f"❌ '{self.role_name}' 그룹을 찾을 수 없습니다.", ephemeral=True)
+            return
+        category = discord.utils.get(interaction.guild.categories, name=self.old)
+        if category:
+            try:
+                await category.edit(name=new_name)
+            except discord.Forbidden:
+                await interaction.response.send_message("❌ 봇에게 카테고리 이름 변경 권한이 없습니다.", ephemeral=True)
+                return
+            except Exception:
+                pass
+        data['studies'][self.role_name]['group_name'] = new_name
+        save_data(data)
+        await interaction.response.send_message(
+            f"✅ 그룹 이름이 '{self.old}'에서 '{new_name}'으로 변경되었습니다.", ephemeral=True)
+
+
 def setup(bot):
     """봇에 명령어 등록"""
-    
+
     @bot.group(name='그룹')
     async def group_group(ctx):
         """그룹 관리 명령어 그룹"""
@@ -2437,14 +2497,27 @@ def setup(bot):
         embed.description = "\n".join(status_list)
         await ctx.send(embed=embed)
 
+    async def _wsd_action(interaction, role_name, group_name):
+        from common.database import get_group_weekly_status, delete_group_weekly_status
+        info = get_group_weekly_status(group_name)
+        if not info:
+            await interaction.response.send_message(
+                f"❌ '{group_name}' 그룹의 주간 현황 메시지를 찾을 수 없습니다.", ephemeral=True)
+            return
+        delete_group_weekly_status(group_name)
+        await interaction.response.send_message(
+            f"✅ '{group_name}' 그룹의 주간 현황 정보가 삭제되었습니다. (메시지는 채널에 남음)", ephemeral=True)
+
     @group_group.command(name='주간현황삭제')
     @commands.has_permissions(administrator=True)
-    async def group_weekly_status_delete(ctx, *, group_name: str):
-        """그룹 주간 현황 메시지 삭제 (관리자 전용)
-        - DB에서 정보만 삭제 (메시지는 채널에 그대로 남음)
-        """
+    async def group_weekly_status_delete(ctx, *, group_name: str = None):
+        """그룹 주간 현황 메시지 삭제 (관리자). 인자 없으면 드롭다운."""
+        if group_name is None:
+            await ctx.send("🗑️ 주간현황을 삭제할 그룹을 선택하세요:",
+                           view=GroupPickerView(ctx.author, load_data().get('studies', {}), _wsd_action))
+            return
         from common.database import get_group_weekly_status, delete_group_weekly_status
-        
+
         info = get_group_weekly_status(group_name)
         if not info:
             await ctx.send(f"❌ '{group_name}' 그룹의 주간 현황 메시지를 찾을 수 없습니다.")
@@ -2867,12 +2940,22 @@ def setup(bot):
         )
         await ctx.send(embed=embed, view=view)
 
+    async def _modify_action(interaction, role_name, group_name):
+        await interaction.response.send_modal(GroupRenameModal(role_name, group_name))
+
     @group_group.command(name='수정')
     @commands.has_permissions(administrator=True)
-    async def group_modify(ctx, role_name: str, *, new_group_name: str):
-        """그룹 이름 수정 (관리자 전용)"""
+    async def group_modify(ctx, role_name: str = None, *, new_group_name: str = None):
+        """그룹 이름 수정 (관리자). 인자 없으면 드롭다운 → 이름 입력."""
+        if role_name is None:
+            await ctx.send("✏️ 이름을 바꿀 그룹을 선택하세요:",
+                           view=GroupPickerView(ctx.author, load_data().get('studies', {}), _modify_action))
+            return
+        if not new_group_name:
+            await ctx.send("❌ 사용법: `/그룹 수정` (드롭다운) 또는 `/그룹 수정 <역할> <새이름>`", delete_after=10)
+            return
         data = load_data()
-        
+
         if role_name not in data.get('studies', {}):
             await ctx.send(f"❌ '{role_name}' 그룹을 찾을 수 없습니다.")
             return
@@ -2902,12 +2985,28 @@ def setup(bot):
         
         await ctx.send(f"✅ 그룹 이름이 '{old_group_name}'에서 '{new_group_name}'으로 변경되었습니다.")
 
+    async def _gdelete_action(interaction, role_name, group_name):
+        data = load_data()
+        assignments = data['studies'].get(role_name, {}).get('assignments', {})
+        view = GroupDeleteConfirmView(role_name, group_name, len(assignments), interaction.user)
+        embed = discord.Embed(
+            title="⚠️ 그룹 삭제 확인",
+            description=f"**그룹:** {group_name}\n**역할:** {role_name}\n**과제 수:** {len(assignments)}개\n\n"
+                        f"이 작업은 되돌릴 수 없습니다! (그룹 정보·과제·제출 기록 삭제, 채널은 수동)\n\n"
+                        f"정말 삭제하시겠습니까?",
+            color=discord.Color.red())
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
     @group_group.command(name='삭제')
     @commands.has_permissions(administrator=True)
-    async def group_delete(ctx, role_name: str):
-        """그룹 삭제 (관리자 전용) - 데이터만 삭제, 카테고리는 수동 삭제"""
+    async def group_delete(ctx, role_name: str = None):
+        """그룹 삭제 (관리자). 인자 없으면 드롭다운 → 확인."""
+        if role_name is None:
+            await ctx.send("🗑️ 삭제할 그룹을 선택하세요:",
+                           view=GroupPickerView(ctx.author, load_data().get('studies', {}), _gdelete_action))
+            return
         data = load_data()
-        
+
         if role_name not in data.get('studies', {}):
             await ctx.send(f"❌ '{role_name}' 그룹을 찾을 수 없습니다.")
             return
