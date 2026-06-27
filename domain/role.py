@@ -611,19 +611,26 @@ def setup(bot):
 
         await ctx.send(f"✅ 디스코드 ID '{discord_id}' 사용자를 '{role_name}' 역할에서 제거했습니다.")
 
+    async def _register_entry(ctx):
+        # 관리자: 패널 게시 채널 선택 / 일반: 바로 등록 버튼
+        if ctx.author.guild_permissions.administrator:
+            await ctx.send(
+                "📌 등록 패널을 어느 채널에 둘지 선택하세요. (그 채널에 토큰 가입·프로필 버튼이 게시됩니다)",
+                view=RegisterSetupView(ctx.author))
+        else:
+            await ctx.send(
+                "🎫 역할 등록 — 아래 버튼으로 토큰 가입 / 프로필 등록을 하세요.",
+                view=RoleRegisterButtonView())
+
     @role_group.command(name='등록')
     async def role_register(ctx):
-        """토큰으로 역할 등록 및 BOJ 핸들 등록 (GUI 방식)"""
-        # Modal 띄우기
-        modal = RoleRegisterModal(ctx.author)
-        await ctx.send("📝 아래 버튼을 눌러 등록 폼을 열어주세요.", view=RoleRegisterButtonView(ctx.author, modal))
-    
+        """토큰으로 역할 등록 (관리자는 패널 채널 선택)"""
+        await _register_entry(ctx)
+
     @bot.command(name='등록')
     async def register_command(ctx):
-        """토큰으로 역할 등록 및 BOJ 핸들 등록 (GUI 방식) - /역할 등록과 동일"""
-        # Modal 띄우기
-        modal = RoleRegisterModal(ctx.author)
-        await ctx.send("📝 아래 버튼을 눌러 등록 폼을 열어주세요.", view=RoleRegisterButtonView(ctx.author, modal))
+        """토큰으로 역할 등록 - /역할 등록과 동일"""
+        await _register_entry(ctx)
 
 def register_persistent_view(bot):
     """봇 재시작 후에도 기존 버튼이 작동하도록 persistent view 등록"""
@@ -659,6 +666,40 @@ class RoleRegisterButtonView(discord.ui.View):
         from common.database import get_user
         existing = get_user(str(interaction.user.id)) or {}
         await interaction.response.send_modal(UserRegistrationModal(existing))
+
+
+class RegisterSetupView(discord.ui.View):
+    """`/등록`(관리자) — 등록 패널을 게시할 채널을 선택."""
+
+    def __init__(self, author):
+        super().__init__(timeout=300)
+        self.author = author
+        self.ch = discord.ui.ChannelSelect(
+            placeholder="등록 패널을 둘 채널 선택",
+            channel_types=[discord.ChannelType.text],
+            min_values=1, max_values=1)
+        self.ch.callback = self._on
+        self.add_item(self.ch)
+
+    async def _on(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author.id:
+            await interaction.response.send_message(
+                "❌ 명령어를 실행한 사용자만 사용할 수 있습니다.", ephemeral=True)
+            return
+        channel = interaction.guild.get_channel(self.ch.values[0].id)
+        if channel is None:
+            await interaction.response.send_message("❌ 채널을 찾을 수 없습니다.", ephemeral=True)
+            return
+        perms = channel.permissions_for(channel.guild.me)
+        if not perms.send_messages:
+            await interaction.response.send_message(
+                f"❌ 봇이 {channel.mention} 에 메시지를 보낼 권한이 없습니다.", ephemeral=True)
+            return
+        await channel.send(
+            "🎫 **역할 등록**\n토큰으로 역할에 가입하고, 프로필(이름·OJ 핸들)을 등록하세요.",
+            view=RoleRegisterButtonView())
+        await interaction.response.edit_message(
+            content=f"✅ {channel.mention} 에 등록 패널을 게시했습니다.", view=None)
 
 
 class ProfilePromptView(discord.ui.View):

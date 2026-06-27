@@ -146,22 +146,31 @@ def _render_command(c: dict) -> str:
     return "\n".join(lines)
 
 
+CATEGORY_DESC = {
+    "유저": "프로필·OJ 핸들 등록, 역할 가입",
+    "역할": "역할 생성·부여, 티어 역할 (관리자)",
+    "그룹": "스터디 그룹 생성·관리 (관리자)",
+    "과제": "주간현황·과제 보드 (관리자)",
+    "문제집·테스트": "노션 문제집 현황, CF 주간테스트 (관리자)",
+    "도움말": "이 도움말",
+}
+
+
 def build_overview_embed(is_admin: bool) -> discord.Embed:
-    """전체 개요 — 카테고리별 명령 시그니처만 한눈에."""
+    """전체 개요 — 카테고리 + 한 줄 설명만 (간결). 상세는 드롭다운/인자."""
     embed = discord.Embed(
         title="🤖 KOALA 봇 도움말",
         description=(
-            "아래 드롭다운에서 카테고리를 고르면 상세 사용법이 나옵니다.\n"
-            "특정 명령만 보려면 `/도움말 <명령어>` — 예: `/도움말 주간테스트`\n"
-            "🔒 = 관리자 전용"
+            "아래 **드롭다운**에서 분야를 고르면 상세 사용법이 나와요.\n"
+            "특정 명령은 `/도움말 <명령어>` — 예: `/도움말 주간테스트`"
         ),
         color=discord.Color.blurple(),
     )
     for cat_key, label in _categories(is_admin):
-        cmds = [c for c in _visible(is_admin) if c["cat"] == cat_key]
-        sigs = "\n".join(f"• `{c['sig']}`" for c in cmds)
-        embed.add_field(name=label, value=sigs, inline=False)
-    embed.set_footer(text="별칭: /도움말 · /help · /명령어 · /command")
+        n = len([c for c in _visible(is_admin) if c["cat"] == cat_key])
+        desc = CATEGORY_DESC.get(cat_key, "")
+        embed.add_field(name=f"{label}  ·  {n}개", value=desc or "​", inline=False)
+    embed.set_footer(text="🔒 관리자 전용 · 별칭 /help /명령어 /command")
     return embed
 
 
