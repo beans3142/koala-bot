@@ -107,31 +107,41 @@ def setup(bot):
         except Exception as e:
             await ctx.send(f"❌ 역할 생성 중 오류가 발생했습니다: {str(e)}")
 
+    def _get_token(role_name):
+        d = load_data()
+        if role_name not in d.get('role_tokens', {}):
+            return None
+        return d['role_tokens'][role_name].get('original_token', '토큰 정보 없음')
+
+    async def _token_action(interaction, role_name):
+        tok = _get_token(role_name)
+        if tok is None:
+            await interaction.response.send_message(f"❌ '{role_name}' 역할이 등록되지 않았습니다.", ephemeral=True)
+            return
+        try:
+            await interaction.user.send(f"**역할:** {role_name}\n**토큰:** `{tok}`")
+            await interaction.response.send_message(f"✅ '{role_name}' 토큰을 DM으로 보냈습니다.", ephemeral=True)
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                f"DM이 막혀있어 여기 표시합니다.\n**역할:** {role_name}\n**토큰:** `{tok}`", ephemeral=True)
+
     @role_group.command(name='토큰')
     @commands.has_permissions(administrator=True)
-    async def role_token(ctx, *, role_name: str):
-        """역할의 토큰 확인 (관리자 전용)"""
-        data = load_data()
-        
-        if role_name not in data.get('role_tokens', {}):
+    async def role_token(ctx, *, role_name: str = None):
+        """역할 토큰 확인 (관리자). 인자 없으면 드롭다운으로 역할 선택."""
+        if role_name is None:
+            await ctx.send("🎟️ 토큰을 볼 역할을 선택하세요:",
+                           view=RolePickerView(ctx.author, _registered_role_names(), _token_action))
+            return
+        tok = _get_token(role_name)
+        if tok is None:
             await ctx.send(f"❌ '{role_name}' 역할이 등록되지 않았습니다. `/역할 생성 {role_name}` 명령어로 먼저 생성해주세요.")
             return
-        
-        token_info = data['role_tokens'][role_name]
-        original_token = token_info.get('original_token', '토큰 정보 없음')
-        
-        # DM으로 토큰 전송
         try:
-            await ctx.author.send(
-                f"**역할:** {role_name}\n"
-                f"**토큰:** `{original_token}`"
-            )
+            await ctx.author.send(f"**역할:** {role_name}\n**토큰:** `{tok}`")
             await ctx.send(f"✅ '{role_name}' 역할의 토큰을 DM으로 전송했습니다.")
         except discord.Forbidden:
-            await ctx.send(
-                f"**역할:** {role_name}\n"
-                f"**토큰:** `{original_token}`"
-            )
+            await ctx.send(f"**역할:** {role_name}\n**토큰:** `{tok}`")
 
     @role_group.command(name='목록')
     @commands.has_permissions(administrator=True)
@@ -159,73 +169,50 @@ def setup(bot):
         
         await ctx.send(embed=embed)
 
-    @role_group.command(name='멤버')
-    @commands.has_permissions(administrator=True)
-    async def role_members(ctx, *, role_name: str):
-        """특정 역할을 가진 멤버 목록 확인 (관리자 전용)"""
+    def _members_embed(guild, role_name):
         from common.database import get_role_users
-        
-        # 역할이 등록되어 있는지 확인
         data = load_data()
         if role_name not in data.get('role_tokens', {}):
-            await ctx.send(f"❌ '{role_name}' 역할이 등록되지 않았습니다.")
-            return
-        
-        # 역할을 가진 유저 목록 가져오기
+            return None, f"❌ '{role_name}' 역할이 등록되지 않았습니다."
         users = get_role_users(role_name)
-        
         if not users:
-            await ctx.send(f"❌ '{role_name}' 역할을 가진 멤버가 없습니다.")
-            return
-        
+            return None, f"❌ '{role_name}' 역할을 가진 멤버가 없습니다."
         embed = discord.Embed(
             title=f"👥 '{role_name}' 역할 멤버 목록",
-            description=f"총 {len(users)}명",
-            color=discord.Color.blue()
-        )
-        
-        # Discord 서버에서 실제 역할을 가진 멤버도 확인
-        role = discord.utils.get(ctx.guild.roles, name=role_name)
-        discord_members = []
-        if role:
-            discord_members = [m for m in ctx.guild.members if role in m.roles]
-        
-        # 유저 정보 표시 (최대 25명, Discord 임베드 제한)
+            description=f"총 {len(users)}명", color=discord.Color.blue())
+        role = discord.utils.get(guild.roles, name=role_name)
         member_list = []
         for i, user_info in enumerate(users[:25], 1):
-            user_id = user_info['user_id']
-            username = user_info['username']
-            boj_handle = user_info.get('boj_handle', '미등록')
-            
-            # Discord 서버에 있는지 확인
-            member = ctx.guild.get_member(int(user_id))
-            if member:
-                display_name = member.display_name
-                status = "✅ 서버 내"
-            else:
-                display_name = username
-                status = "⚠️ 서버 외"
-            
-            member_list.append(f"{i}. {display_name} ({boj_handle}) - {status}")
-        
+            uid = user_info['user_id']
+            member = guild.get_member(int(uid)) if uid else None
+            display_name = member.display_name if member else user_info['username']
+            status = "✅ 서버 내" if member else "⚠️ 서버 외"
+            member_list.append(f"{i}. {display_name} ({user_info.get('boj_handle', '미등록')}) - {status}")
         if len(users) > 25:
             member_list.append(f"\n... 외 {len(users) - 25}명")
-        
-        embed.add_field(
-            name="멤버 목록",
-            value="\n".join(member_list) if member_list else "멤버 없음",
-            inline=False
-        )
-        
-        # Discord 역할과 비교
+        embed.add_field(name="멤버 목록", value="\n".join(member_list) or "멤버 없음", inline=False)
         if role:
-            embed.add_field(
-                name="Discord 역할 멤버 수",
-                value=f"{len(discord_members)}명",
-                inline=True
-            )
-        
-        await ctx.send(embed=embed)
+            dm = [m for m in guild.members if role in m.roles]
+            embed.add_field(name="Discord 역할 멤버 수", value=f"{len(dm)}명", inline=True)
+        return embed, None
+
+    async def _members_action(interaction, role_name):
+        embed, err = _members_embed(interaction.guild, role_name)
+        if err:
+            await interaction.response.send_message(err, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @role_group.command(name='멤버')
+    @commands.has_permissions(administrator=True)
+    async def role_members(ctx, *, role_name: str = None):
+        """역할 멤버 목록 (관리자). 인자 없으면 드롭다운으로 역할 선택."""
+        if role_name is None:
+            await ctx.send("👥 멤버를 볼 역할을 선택하세요:",
+                           view=RolePickerView(ctx.author, _registered_role_names(), _members_action))
+            return
+        embed, err = _members_embed(ctx.guild, role_name)
+        await ctx.send(content=err) if err else await ctx.send(embed=embed)
 
     @role_group.command(name='부여')
     @commands.has_permissions(administrator=True)
@@ -315,130 +302,87 @@ def setup(bot):
             f"BOJ 핸들 `{boj_handle}`를 등록했습니다."
         )
 
-    @role_group.command(name='문제풀이현황')
-    @commands.has_permissions(administrator=True)
-    async def role_problem_status(ctx, *, role_name: str):
-        """특정 역할 멤버들의 최근 7일(월~일) 백준 문제풀이 현황 (관리자 전용)"""
-        
-        # 역할이 등록되어 있는지 확인
+    async def _problem_status_embed(guild, role_name):
         data = load_data()
         if role_name not in data.get('role_tokens', {}):
-            await ctx.send(f"❌ '{role_name}' 역할이 등록되지 않았습니다.")
-            return
-        
-        # 역할을 가진 유저 목록 가져오기
+            return None, f"❌ '{role_name}' 역할이 등록되지 않았습니다."
         users = get_role_users(role_name)
-        
         if not users:
-            await ctx.send(f"❌ '{role_name}' 역할을 가진 멤버가 없습니다.")
-            return
-        
-        # 이번 주 월요일~일요일 계산
+            return None, f"❌ '{role_name}' 역할을 가진 멤버가 없습니다."
         today = datetime.now()
-        # 월요일 찾기 (0=월요일, 6=일요일)
-        days_since_monday = today.weekday()
-        monday = today - timedelta(days=days_since_monday)
-        monday = monday.replace(hour=0, minute=0, second=0, microsecond=0)
+        monday = (today - timedelta(days=today.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
         sunday = monday + timedelta(days=6, hours=23, minutes=59, seconds=59)
-        
-        await ctx.send(f"🔄 최근 7일간(월~일) 백준 문제풀이 현황을 조회하는 중...\n📅 기간: {monday.strftime('%Y-%m-%d')} ~ {sunday.strftime('%Y-%m-%d')}")
-        
-        # 각 유저의 백준 문제풀이 현황 조회
+
         results = []
-        for user_info in users:
-            user_id = user_info['user_id']
-            username = user_info['username']
-            boj_handle = user_info.get('boj_handle')
-            
-            if not boj_handle or boj_handle == '미등록':
-                results.append({
-                    'username': username,
-                    'boj_handle': boj_handle or '미등록',
-                    'solved_count': 0,
-                    'status': '❌ BOJ 핸들 미등록'
-                })
+        for ui in users:
+            bh = ui.get('boj_handle')
+            base = {'username': ui['username'], 'boj_handle': bh or '미등록',
+                    'user_id': ui.get('user_id'), 'solved_count': 0, 'problems': []}
+            if not bh or bh == '미등록':
+                results.append({**base, 'status': '❌ BOJ 핸들 미등록'})
                 continue
-            
-            # 백준에서 최근 7일간 해결한 문제 수 조회
             try:
-                solved_data = await get_weekly_solved_count(boj_handle, monday, sunday)
-                results.append({
-                    'username': username,
-                    'boj_handle': boj_handle,
-                    'solved_count': solved_data['count'],
-                    'problems': solved_data.get('problems', []),
-                    'status': '✅' if solved_data['count'] > 0 else '⚠️'
-                })
+                sd = await get_weekly_solved_count(bh, monday, sunday)
+                results.append({**base, 'boj_handle': bh, 'solved_count': sd['count'],
+                                'problems': sd.get('problems', []),
+                                'status': '✅' if sd['count'] > 0 else '⚠️'})
             except Exception as e:
-                results.append({
-                    'username': username,
-                    'boj_handle': boj_handle,
-                    'solved_count': 0,
-                    'status': f'❌ 오류: {str(e)[:30]}'
-                })
-        
-        # 결과 정렬 (해결한 문제 수 많은 순)
+                results.append({**base, 'boj_handle': bh, 'status': f'❌ 오류: {str(e)[:30]}'})
+
         results.sort(key=lambda x: x['solved_count'], reverse=True)
-        
-        # 임베드 생성
         embed = discord.Embed(
             title=f"📊 '{role_name}' 역할 멤버 백준 문제풀이 현황",
             description=f"기간: {monday.strftime('%Y-%m-%d')} ~ {sunday.strftime('%Y-%m-%d')} (월~일)",
-            color=discord.Color.blue()
-        )
-        
-        # 멤버별 현황 표시 (최대 25명, Discord 임베드 제한)
+            color=discord.Color.blue())
         member_list = []
         total_solved = 0
-        for i, result in enumerate(results[:25], 1):
-            status_icon = result['status']
-            username = result['username']
-            boj_handle = result['boj_handle']
-            solved_count = result['solved_count']
-            total_solved += solved_count
-            
-            # 제외 대상 필터링
-            user_id = result.get('user_id')
-            if (user_id and user_id in EXCLUDED_USER_IDS) or (boj_handle and boj_handle in EXCLUDED_BOJ_HANDLES):
+        for i, r in enumerate(results[:25], 1):
+            total_solved += r['solved_count']
+            uid = r.get('user_id')
+            if (uid and uid in EXCLUDED_USER_IDS) or (r['boj_handle'] and r['boj_handle'] in EXCLUDED_BOJ_HANDLES):
                 continue
-            
-            # 순위 라벨 (1,2,3 -> 메달)
-            rank_label = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"{i}.")
-            
-            if boj_handle == '미등록':
-                member_list.append(f"{rank_label} {username} - {status_icon} BOJ 핸들 미등록")
+            rank = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"{i}.")
+            if r['boj_handle'] == '미등록':
+                member_list.append(f"{rank} {r['username']} - {r['status']} BOJ 핸들 미등록")
+            elif r['solved_count'] == 0:
+                member_list.append(f"{rank} {r['boj_handle']} - {r['status']} 0개")
             else:
-                problems = result.get('problems', [])
-                if solved_count == 0:
-                    member_list.append(f"{rank_label} {boj_handle} - {status_icon} 0개")
+                ps = sorted(r.get('problems', []))
+                if len(ps) <= 15:
+                    member_list.append(f"{rank} {r['boj_handle']} - {r['status']} {r['solved_count']}개 [{', '.join(map(str, ps))}]")
                 else:
-                    problems_sorted = sorted(problems)
-                    if len(problems_sorted) <= 15:
-                        problems_str = ", ".join(map(str, problems_sorted))
-                        member_list.append(f"{rank_label} {boj_handle} - {status_icon} {solved_count}개 [{problems_str}]")
-                    else:
-                        problems_str = ", ".join(map(str, problems_sorted[:15]))
-                        remaining = len(problems_sorted) - 15
-                        member_list.append(f"{rank_label} {boj_handle} - {status_icon} {solved_count}개 [{problems_str}, ... 외 {remaining}개]")
-        
+                    member_list.append(f"{rank} {r['boj_handle']} - {r['status']} {r['solved_count']}개 [{', '.join(map(str, ps[:15]))}, ... 외 {len(ps) - 15}개]")
         if len(results) > 25:
             member_list.append(f"\n... 외 {len(results) - 25}명")
-        
-        embed.add_field(
-            name="멤버별 문제풀이 현황",
-            value="\n".join(member_list) if member_list else "멤버 없음",
-            inline=False
-        )
-        
-        # 통계
-        active_members = len([r for r in results if r['solved_count'] > 0])
-        embed.add_field(
-            name="📈 통계",
-            value=f"총 멤버: {len(results)}명\n문제 풀은 멤버: {active_members}명\n총 해결한 문제: {total_solved}개",
-            inline=False
-        )
-        
-        await ctx.send(embed=embed)
+        embed.add_field(name="멤버별 문제풀이 현황", value="\n".join(member_list) or "멤버 없음", inline=False)
+        active = len([r for r in results if r['solved_count'] > 0])
+        embed.add_field(name="📈 통계",
+                        value=f"총 멤버: {len(results)}명\n문제 풀은 멤버: {active}명\n총 해결한 문제: {total_solved}개",
+                        inline=False)
+        return embed, None
+
+    async def _problem_status_action(interaction, role_name):
+        await interaction.response.defer(ephemeral=True)
+        embed, err = await _problem_status_embed(interaction.guild, role_name)
+        if err:
+            await interaction.followup.send(err, ephemeral=True)
+        else:
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @role_group.command(name='문제풀이현황')
+    @commands.has_permissions(administrator=True)
+    async def role_problem_status(ctx, *, role_name: str = None):
+        """역할 멤버 주간(월~일) 백준 문제풀이 현황 (관리자). 인자 없으면 드롭다운."""
+        if role_name is None:
+            await ctx.send("📊 현황을 볼 역할을 선택하세요:",
+                           view=RolePickerView(ctx.author, _registered_role_names(), _problem_status_action))
+            return
+        loading = await ctx.send("🔄 백준 문제풀이 현황을 조회하는 중...")
+        embed, err = await _problem_status_embed(ctx.guild, role_name)
+        if err:
+            await loading.edit(content=err)
+        else:
+            await loading.edit(content=None, embed=embed)
 
     @role_group.command(name='주간현황설정')
     @commands.has_permissions(administrator=True)
@@ -937,6 +881,36 @@ class RoleAssignEntryView(discord.ui.View):
         await interaction.response.send_message(
             content="🎫 역할 부여 — 역할과 사용자를 선택하고 **부여**를 누르세요.",
             view=RoleAssignView(interaction.user, role_names), ephemeral=True)
+
+
+# ==================== 범용 역할 선택 패널 ====================
+
+class RolePickerView(discord.ui.View):
+    """역할 하나를 드롭다운으로 골라 action(interaction, role_name) 을 실행하는 범용 패널."""
+
+    def __init__(self, author, role_names, action, placeholder="역할 선택"):
+        super().__init__(timeout=300)
+        self.author = author
+        self.action = action
+        opts = ([discord.SelectOption(label=r, value=r) for r in role_names[:25]]
+                or [discord.SelectOption(label="(역할 없음)", value="__none__")])
+        self.sel = discord.ui.Select(placeholder=placeholder, options=opts)
+        self.sel.callback = self._cb
+        self.add_item(self.sel)
+
+    async def _cb(self, interaction: discord.Interaction):
+        if interaction.user.id != self.author.id:
+            await interaction.response.send_message("❌ 본인만 사용할 수 있습니다.", ephemeral=True)
+            return
+        val = self.sel.values[0]
+        if val == "__none__":
+            await interaction.response.send_message("❌ 등록된 역할이 없습니다.", ephemeral=True)
+            return
+        await self.action(interaction, val)
+
+
+def _registered_role_names():
+    return list(load_data().get('role_tokens', {}).keys())
 
 
 # ==================== 주간 문제풀이 현황 스케줄 작업 ====================
