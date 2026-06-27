@@ -630,54 +630,63 @@ class RoleRegisterButtonView(discord.ui.View):
         self.author = author
         self.modal = modal
     
-    @discord.ui.button(label='📝 등록 폼 열기', style=discord.ButtonStyle.primary, custom_id='role_register_button')
+    @discord.ui.button(label='🎫 역할 등록 (토큰)', style=discord.ButtonStyle.primary, custom_id='role_register_button')
     async def open_modal_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         # 각 사용자가 자신의 정보를 입력할 수 있도록 새로운 Modal 생성
         modal = RoleRegisterModal(interaction.user)
         await interaction.response.send_modal(modal)
 
+    @discord.ui.button(label='📝 프로필 등록/수정', style=discord.ButtonStyle.secondary, custom_id='profile_open_button')
+    async def open_profile_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # 이름·OJ 핸들 입력 (역할 등록과 분리)
+        from domain.user import UserRegistrationModal
+        from common.database import get_user
+        existing = get_user(str(interaction.user.id)) or {}
+        await interaction.response.send_modal(UserRegistrationModal(existing))
 
-class RoleRegisterModal(discord.ui.Modal, title="역할 및 BOJ 핸들 등록"):
-    """역할 등록 Modal"""
-    
-    def __init__(self, author):
+
+class ProfilePromptView(discord.ui.View):
+    """역할 등록 직후 프로필 입력을 유도하는 버튼 (ephemeral 응답용)."""
+
+    def __init__(self):
+        super().__init__(timeout=300)
+
+    @discord.ui.button(label="📝 프로필 등록/수정", style=discord.ButtonStyle.primary)
+    async def open_profile(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from domain.user import UserRegistrationModal
+        from common.database import get_user
+        existing = get_user(str(interaction.user.id)) or {}
+        await interaction.response.send_modal(UserRegistrationModal(existing))
+
+
+class RoleRegisterModal(discord.ui.Modal, title="역할 등록 (토큰)"):
+    """역할 등록 Modal — 토큰만 입력. 이름·OJ 핸들은 /프로필 에서 분리 관리.
+
+    이전에는 BOJ 핸들을 필수로 받고 검증했지만, 등록(역할)과 프로필(핸들)을
+    분리하고 외부 사이트 의존을 없애기 위해 토큰만 받는다.
+    멤버십은 DB(user_roles)에 기록되어야 채점/주간현황에 잡힌다.
+    """
+
+    def __init__(self, author=None):
         super().__init__(timeout=600)
         self.author = author
-        
-        # 토큰 입력
+
         self.token_input = discord.ui.TextInput(
             label="토큰",
-            placeholder="역할 등록 토큰을 입력하세요",
+            placeholder="관리자가 준 역할 등록 토큰",
             max_length=100,
-            required=True
+            required=True,
         )
         self.add_item(self.token_input)
-        
-        # BOJ 핸들 입력 (필수)
-        self.boj_input = discord.ui.TextInput(
-            label="BOJ 핸들",
-            placeholder="백준 핸들을 입력하세요",
-            max_length=50,
-            required=True
-        )
-        self.add_item(self.boj_input)
-    
+
     async def on_submit(self, interaction: discord.Interaction):
-        from common.utils import load_data, save_data, verify_token
-        from common.boj_utils import verify_user_exists
-        
+        from common.utils import load_data, save_data, verify_token, send_bot_notification
+        from common.database import create_or_update_user, add_user_role
+
         data = load_data()
         role_tokens = data.get('role_tokens', {})
-        
         token = self.token_input.value.strip()
-        boj_handle = self.boj_input.value.strip()
-        
-        # BOJ 핸들 검증
-        exists = await verify_user_exists(boj_handle)
-        if not exists:
-            await interaction.response.send_message(f"❌ 백준 아이디 '{boj_handle}'를 찾을 수 없습니다.", ephemeral=True)
-            return
-        
+
         # 토큰으로 역할 찾기
         role_name = None
         for name, token_info in role_tokens.items():
@@ -685,62 +694,62 @@ class RoleRegisterModal(discord.ui.Modal, title="역할 및 BOJ 핸들 등록"):
             if stored_hash and verify_token(token, stored_hash):
                 role_name = name
                 break
-        
         if not role_name:
-            await interaction.response.send_message("❌ 유효하지 않은 토큰입니다. 토큰을 다시 확인해주세요.", ephemeral=True)
+            await interaction.response.send_message(
+                "❌ 유효하지 않은 토큰입니다. 토큰을 다시 확인해주세요.", ephemeral=True)
             return
-        
-        # 역할 찾기
+
         role = discord.utils.get(interaction.guild.roles, name=role_name)
         if not role:
-            await interaction.response.send_message(f"❌ '{role_name}' 역할을 서버에서 찾을 수 없습니다. 관리자에게 문의해주세요.", ephemeral=True)
+            await interaction.response.send_message(
+                f"❌ '{role_name}' 역할을 서버에서 찾을 수 없습니다. 관리자에게 문의해주세요.", ephemeral=True)
             return
-        
-        # 이미 역할을 가지고 있는지 확인
+
         if role in interaction.user.roles:
-            await interaction.response.send_message(f"✅ 이미 '{role_name}' 역할을 가지고 있습니다.", ephemeral=True)
+            await interaction.response.send_message(
+                f"✅ 이미 '{role_name}' 역할을 가지고 있습니다.\n"
+                f"OJ 핸들 등록/수정은 아래 버튼으로.",
+                ephemeral=True, view=ProfilePromptView())
             return
-        
-        # 역할 부여
+
         try:
             await interaction.user.add_roles(role)
-            
-            # 데이터 저장
             user_id = str(interaction.user.id)
+
+            # DB 기록 — 채점/주간현황(get_role_users)이 읽는 곳
+            create_or_update_user(user_id, str(interaction.user))
+            add_user_role(user_id, role_name)
+
+            # JSON 호환 유지 (기존 코드들이 참조)
+            data.setdefault('users', {})
             if user_id not in data['users']:
                 data['users'][user_id] = {
                     'username': str(interaction.user),
                     'boj_handle': None,
                     'tistory_links': [],
                     'roles': [],
-                    'submissions': {}
+                    'submissions': {},
                 }
-            
-            # 역할 정보 저장
-            if role_name not in data['users'][user_id]['roles']:
+            if role_name not in data['users'][user_id].setdefault('roles', []):
                 data['users'][user_id]['roles'].append(role_name)
-            
-            # BOJ 핸들 저장
-            data['users'][user_id]['boj_handle'] = boj_handle
-            
             save_data(data)
-            
-            # 봇 알림 채널에 알림 전송
-            from common.utils import send_bot_notification
+
             await send_bot_notification(
                 interaction.guild,
                 "👤 역할 가입",
                 f"**사용자:** {interaction.user.mention} ({interaction.user.display_name})\n"
-                f"**역할:** {role_name}\n"
-                f"**BOJ 핸들:** {boj_handle}",
-                discord.Color.green()
+                f"**역할:** {role_name}",
+                discord.Color.green(),
             )
-            
-            message = f"✅ '{role_name}' 역할이 부여되었습니다!\n📝 BOJ 핸들 '{boj_handle}'가 등록되었습니다."
-            
-            await interaction.response.send_message(message, ephemeral=True)
+
+            await interaction.response.send_message(
+                f"✅ '{role_name}' 역할이 부여되었습니다!\n"
+                f"이제 **프로필**에서 이름과 OJ 핸들(백준·Codeforces 등)을 등록하면 "
+                f"풀이현황·주간테스트에 집계됩니다. 아래 버튼으로 등록하세요.",
+                ephemeral=True, view=ProfilePromptView())
         except discord.Forbidden:
-            await interaction.response.send_message("❌ 봇에게 역할을 부여할 권한이 없습니다. 서버 관리자에게 문의해주세요.", ephemeral=True)
+            await interaction.response.send_message(
+                "❌ 봇에게 역할을 부여할 권한이 없습니다. 서버 관리자에게 문의해주세요.", ephemeral=True)
         except Exception as e:
             await interaction.response.send_message(f"❌ 오류가 발생했습니다: {str(e)}", ephemeral=True)
 
