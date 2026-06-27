@@ -177,23 +177,32 @@ def setup(bot):
         users = get_role_users(role_name)
         if not users:
             return None, f"❌ '{role_name}' 역할을 가진 멤버가 없습니다."
-        embed = discord.Embed(
-            title=f"👥 '{role_name}' 역할 멤버 목록",
-            description=f"총 {len(users)}명", color=discord.Color.blue())
         role = discord.utils.get(guild.roles, name=role_name)
-        member_list = []
-        for i, user_info in enumerate(users[:25], 1):
-            uid = user_info['user_id']
+        lines = []
+        for i, u in enumerate(users[:25], 1):
+            uid = u.get('user_id')
             member = guild.get_member(int(uid)) if uid else None
-            display_name = member.display_name if member else user_info['username']
-            status = "✅ 서버 내" if member else "⚠️ 서버 외"
-            member_list.append(f"{i}. {display_name} ({user_info.get('boj_handle', '미등록')}) - {status}")
+            display_name = member.display_name if member else u.get('username', 'Unknown')
+            status = "✅" if member else "⚠️"
+            handles = []
+            if u.get('boj_handle'):        handles.append(f"BOJ `{u['boj_handle']}`")
+            if u.get('codeforces_handle'): handles.append(f"CF `{u['codeforces_handle']}`")
+            if u.get('atcoder_handle'):    handles.append(f"AC `{u['atcoder_handle']}`")
+            if u.get('jungol_handle'):     handles.append(f"정올 `{u['jungol_handle']}`")
+            hstr = " · ".join(handles) or "*OJ 미등록*"
+            lines.append(f"{status} **{i}. {display_name}**\n　{hstr}")
         if len(users) > 25:
-            member_list.append(f"\n... 외 {len(users) - 25}명")
-        embed.add_field(name="멤버 목록", value="\n".join(member_list) or "멤버 없음", inline=False)
+            lines.append(f"... 외 {len(users) - 25}명")
+        desc = f"총 **{len(users)}명**"
         if role:
             dm = [m for m in guild.members if role in m.roles]
-            embed.add_field(name="Discord 역할 멤버 수", value=f"{len(dm)}명", inline=True)
+            desc += f" · Discord 역할 보유 {len(dm)}명"
+        desc += "\n\n" + "\n".join(lines)
+        if len(desc) > 4000:
+            desc = desc[:4000] + "\n…"
+        embed = discord.Embed(
+            title=f"👥 '{role_name}' 역할 멤버",
+            description=desc, color=discord.Color.blue())
         return embed, None
 
     async def _members_action(interaction, role_name):
