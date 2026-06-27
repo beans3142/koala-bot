@@ -48,10 +48,10 @@ _bot_for_scheduler = None
 
 def get_weekend_range():
     """
-    이번 주 주말 윈도우와 결산 시각 반환.
+    이번 주 주말 윈도우와 종료(결산) 시각 반환.
       week_start = 이번 주 토요일 00:00 KST
       week_end   = 이번 주 일요일 23:59:59 KST
-      settle_at  = 다음 주 월요일 01:00 KST (최종 결산)
+      settle_at  = 다음 주 월요일 00:00 KST (종료 = 최종 결산)
     """
     now = get_kst_now()
     monday = (now - timedelta(days=now.weekday())).replace(
@@ -59,7 +59,7 @@ def get_weekend_range():
     )
     saturday = monday + timedelta(days=5)
     sunday_end = monday + timedelta(days=6, hours=23, minutes=59, seconds=59)
-    settle_at = monday + timedelta(days=7, hours=1)  # 다음 월요일 01:00
+    settle_at = monday + timedelta(days=7)  # 다음 월요일 00:00 (종료/결산)
     return saturday, sunday_end, settle_at
 
 
@@ -294,9 +294,12 @@ async def update_test_message(group_name: str, contest_id: str, bot_instance,
 
 # ==================== 스케줄러 ====================
 
-@tasks.loop(time=[time(hour=h, minute=0) for h in range(24)])
+REFRESH_HOURS = (0, 4, 8, 12, 16, 20)  # 4시간 주기 갱신 (KST). 월 00:00 틱이 최종 결산.
+
+
+@tasks.loop(time=[time(hour=h, minute=0) for h in REFRESH_HOURS])
 async def weekly_test_auto_update():
-    """매시 정각 — 활성 주간테스트 보드 갱신. 월 01:00 시점엔 결산 처리."""
+    """4시간 주기(00·04·08·12·16·20 KST) 보드 갱신. 월 00:00 틱에서 종료/결산."""
     if not _bot_for_scheduler:
         return
     now = get_kst_now()
@@ -308,7 +311,8 @@ async def weekly_test_auto_update():
             settle_at = ensure_kst(datetime.fromisoformat(info['settle_at']))
         except Exception:
             continue
-        # 윈도우 시작 ~ 결산 시각 +5분 사이에만 갱신
+        # 주말 윈도우(토 00:00) ~ 종료(월 00:00) +5분 사이에만 갱신.
+        # 월 00:00 틱에서 now>=settle_at 가 되어 update_test_message 가 결산 처리.
         if week_start <= now <= settle_at + timedelta(minutes=5):
             try:
                 await update_test_message(
@@ -327,7 +331,7 @@ def start_weekly_test_scheduler(bot_instance):
     _bot_for_scheduler = bot_instance
     if not weekly_test_auto_update.is_running():
         weekly_test_auto_update.start()
-        logger.info("[weekly_test] 자동 갱신/결산 스케줄러 시작 (매시 정각, 월 01:00 결산)")
+        logger.info("[weekly_test] 자동 갱신/결산 스케줄러 시작 (4시간 주기 00·04·08·12·16·20, 월 00:00 종료/결산)")
 
 
 # ==================== 보드 버튼 (persistent) ====================
@@ -396,43 +400,64 @@ class WeeklyTestRefreshView(discord.ui.View):
 
 
 def register_weekly_test_views(bot):
+    # 영구 버튼: 보드 갱신/결산 + 셋업 진입(DynamicItem) — 봇 재시작 후에도 동작
+    bot.add_dynamic_items(WeeklyTestSetupButton)
     bot.add_view(WeeklyTestRefreshView())
 
 
-# ==================== 셋업 (ephemeral) ====================
+# ==================== 셋업 (ephemeral, 영구 버튼) ====================
 
-class WeeklyTestSetupButtonView(discord.ui.View):
-    """명령 실행 후 공개로 뜨는 '설정 열기' 버튼. 누르면 본인만 보이는 셀렉트가 열림."""
-
-    def __init__(self, author: discord.Member, contest_id: str):
-        super().__init__(timeout=600)
-        self.author = author
-        self.contest_id = contest_id
-
-    @discord.ui.button(label="설정 열기 (본인만)", emoji="⚙️", style=discord.ButtonStyle.primary)
-    async def open_setup(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.author.id:
-            await interaction.response.send_message(
-                "❌ 명령어를 실행한 사용자만 사용할 수 있습니다.", ephemeral=True)
-            return
-
-        data = load_data()
-        studies = data.get('studies', {})
-        groups = [(rn, sd.get('group_name', rn)) for rn, sd in studies.items()]
-        groups.sort(key=lambda x: x[1])
-        if not groups:
-            await interaction.response.send_message(
-                "❌ 등록된 그룹이 없습니다. `/그룹 생성`으로 먼저 만들어주세요.", ephemeral=True)
-            return
-
-        view = WeeklyTestSelectView(self.author, self.contest_id, groups)
+async def _open_setup_panel(interaction: discord.Interaction, contest_id: str, author_id: int):
+    """'설정 열기' 클릭 → 본인만 보이는 그룹/채널 셀렉트 패널."""
+    if interaction.user.id != author_id:
         await interaction.response.send_message(
-            content=(
-                f"🏆 주간테스트 설정 — 대회 **{self.contest_id}**\n"
-                f"그룹과 보드를 띄울 채널을 선택하고 **전송**을 누르세요."
-            ),
-            view=view, ephemeral=True,
-        )
+            "❌ 명령어를 실행한 사용자만 사용할 수 있습니다.", ephemeral=True)
+        return
+    data = load_data()
+    studies = data.get('studies', {})
+    groups = [(rn, sd.get('group_name', rn)) for rn, sd in studies.items()]
+    groups.sort(key=lambda x: x[1])
+    if not groups:
+        await interaction.response.send_message(
+            "❌ 등록된 그룹이 없습니다. `/그룹 생성`으로 먼저 만들어주세요.", ephemeral=True)
+        return
+    view = WeeklyTestSelectView(interaction.user, contest_id, groups)
+    await interaction.response.send_message(
+        content=(
+            f"🏆 주간테스트 설정 — 대회 **{contest_id}**\n"
+            f"그룹과 보드를 띄울 채널을 선택하고 **전송**을 누르세요."
+        ),
+        view=view, ephemeral=True,
+    )
+
+
+class WeeklyTestSetupButton(discord.ui.DynamicItem[discord.ui.Button],
+                            template=r'wt_setup:(?P<cid>\d+):(?P<uid>\d+)'):
+    """영구(persistent) '설정 열기' 버튼. custom_id 에 contest_id/author 인코딩 →
+    봇 재시작 후에도 살아남아 '상호작용 실패' 없이 동작."""
+
+    def __init__(self, contest_id: str, author_id: int):
+        self.contest_id = str(contest_id)
+        self.author_id = int(author_id)
+        super().__init__(discord.ui.Button(
+            label="설정 열기 (본인만)", emoji="⚙️",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"wt_setup:{contest_id}:{author_id}",
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        return cls(match['cid'], int(match['uid']))
+
+    async def callback(self, interaction: discord.Interaction):
+        await _open_setup_panel(interaction, self.contest_id, self.author_id)
+
+
+def make_setup_view(contest_id: str, author_id: int) -> discord.ui.View:
+    """영구 셋업 버튼을 담은 View."""
+    view = discord.ui.View(timeout=None)
+    view.add_item(WeeklyTestSetupButton(contest_id, author_id))
+    return view
 
 
 class WeeklyTestSelectView(discord.ui.View):
@@ -602,9 +627,9 @@ def setup(bot: commands.Bot):
         await loading.edit(
             content=(
                 f"🏆 대회 **{contest_id}** 확인됨. 아래 버튼으로 그룹/채널을 설정하세요. "
-                f"(설정 창은 본인만 보입니다)"
+                f"(설정 창은 본인만 보입니다 · 버튼은 영구적이라 재시작 후에도 동작)"
             ),
-            view=WeeklyTestSetupButtonView(ctx.author, contest_id),
+            view=make_setup_view(contest_id, ctx.author.id),
         )
 
     @weekly_test.error
