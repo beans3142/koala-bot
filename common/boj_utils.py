@@ -562,6 +562,12 @@ async def verify_user_exists(baekjoon_id: str) -> bool:
       - GET /api/v3/user/show?handle={handle}
       - 200: 사용자 존재
       - 404: 사용자 없음
+
+    Fallback 정책:
+      검증 소스(solved.ac)가 명확히 "없음(404)"이라고 답할 때만 False.
+      그 외 확인 불가 상황(연결 실패·타임아웃·403·5xx 등)에서는
+      가입을 막지 않도록 True(통과)로 처리한다. 서버가 살아있으면 검증하고,
+      못 띄울 때만 통과시키는 것이 목적.
     """
     try:
         url = f"https://solved.ac/api/v3/user/show?handle={baekjoon_id}"
@@ -576,15 +582,16 @@ async def verify_user_exists(baekjoon_id: str) -> bool:
                     return True
                 if response.status == 404:
                     return False
-                # 기타 상태코드는 보수적으로 False 처리
-                logger.warning(f"[solved.ac API] HTTP {response.status} 에러: {url} (서버 문제 가능성)")
-                return False
+                # 기타 상태코드는 검증 불가 → 통과(가입 차단 방지)
+                logger.warning(f"[solved.ac API] HTTP {response.status} 에러: {url} (서버 문제 가능성) → 검증 불가로 통과 처리")
+                return True
     except (aiohttp.ClientConnectorError, aiohttp.ServerTimeoutError, asyncio.TimeoutError) as e:
-        logger.error(f"[solved.ac API] solved.ac 서버 연결 실패: {e} (서버 다운 가능성)")
-        return False
+        logger.error(f"[solved.ac API] solved.ac 서버 연결 실패: {e} (서버 다운 가능성) → 검증 불가로 통과 처리")
+        return True
     except Exception as e:
         logger.error(f"[solved.ac API] 사용자 확인 오류: {e}", exc_info=True)
-        return False
+        # 예기치 못한 오류도 가입을 막지 않도록 통과 처리
+        return True
 
 async def check_problem_solved(baekjoon_id: str, problem_id: int) -> bool:
     """특정 문제를 해결했는지 확인 (status 페이지에서 확인)"""
