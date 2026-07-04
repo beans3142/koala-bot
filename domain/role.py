@@ -586,20 +586,6 @@ def setup(bot):
 
         await ctx.send(f"✅ 디스코드 ID '{discord_id}' 사용자를 '{role_name}' 역할에서 제거했습니다.")
 
-    @role_group.command(name='디버그')
-    @commands.has_permissions(administrator=True)
-    async def role_debug(ctx):
-        """진단: load_data()가 읽는 role_tokens 를 그대로 출력 (드롭다운이 쓰는 값)."""
-        names = _registered_role_names()
-        lines = [f"**role_tokens (드롭다운 소스) — {len(names)}개**"]
-        for i, n in enumerate(names, 1):
-            mark = "  ⛔[25초과]" if i > 25 else ""
-            lines.append(f"{i}. `{n}`{mark}")
-        # 실제 SelectOption 이 몇 개 만들어지는지
-        view = RolePickerView(ctx.author, names, None)
-        lines.append(f"\n→ 드롭다운에 실제로 실리는 옵션: **{len(view.sel.options)}개**")
-        await ctx.send("\n".join(lines)[:1900])
-
     async def _register_entry(ctx):
         # 관리자: 패널 게시 채널 선택 / 일반: 바로 등록 버튼
         if ctx.author.guild_permissions.administrator:

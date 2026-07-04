@@ -415,11 +415,13 @@ async def _open_setup_panel(interaction: discord.Interaction, contest_id: str, a
         return
     data = load_data()
     studies = data.get('studies', {})
-    groups = [(rn, sd.get('group_name', rn)) for rn, sd in studies.items()]
+    role_tokens = data.get('role_tokens', {})
+    # 그룹(스터디)만이 아니라 '등록된 모든 역할'을 대상으로. 그룹명 있으면 표시.
+    groups = [(rn, (studies.get(rn) or {}).get('group_name', rn)) for rn in role_tokens]
     groups.sort(key=lambda x: x[1])
     if not groups:
         await interaction.response.send_message(
-            "❌ 등록된 그룹이 없습니다. `/그룹 생성`으로 먼저 만들어주세요.", ephemeral=True)
+            "❌ 등록된 역할이 없습니다. `/역할 생성`으로 먼저 만들어주세요.", ephemeral=True)
         return
     view = WeeklyTestSelectView(interaction.user, contest_id, groups)
     await interaction.response.send_message(
