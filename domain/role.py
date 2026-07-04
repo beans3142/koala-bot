@@ -475,12 +475,11 @@ def setup(bot):
         try:
             # 디스코드에서 역할 삭제
             await role.delete(reason=f"봇에 의해 삭제됨 - {ctx.author}")
-            
-            # 데이터에서 토큰 정보 삭제
-            if role_name in data.get('role_tokens', {}):
-                del data['role_tokens'][role_name]
-                save_data(data)
-            
+
+            # DB에서 실제 삭제 (save_data는 삭제를 반영하지 않으므로 직접 호출)
+            from common.database import delete_role_token
+            delete_role_token(role_name)
+
             await ctx.send(f"✅ '{role_name}' 역할이 삭제되었습니다.")
         except discord.Forbidden:
             await ctx.send("❌ 봇에게 역할을 삭제할 권한이 없습니다. 서버 관리자에게 문의해주세요.")
@@ -1045,10 +1044,8 @@ class RoleDeleteConfirmView(discord.ui.View):
             return
         try:
             await role.delete(reason=f"봇에 의해 삭제됨 - {interaction.user}")
-            data = load_data()
-            if self.role_name in data.get('role_tokens', {}):
-                del data['role_tokens'][self.role_name]
-                save_data(data)
+            from common.database import delete_role_token
+            delete_role_token(self.role_name)  # DB에서 실제 삭제 (save_data는 삭제 반영 안 함)
             await interaction.response.edit_message(
                 content=f"✅ '{self.role_name}' 역할이 삭제되었습니다.", view=None)
         except discord.Forbidden:
