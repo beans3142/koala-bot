@@ -35,7 +35,7 @@ from common.database import (
 )
 from common.utils import load_data, get_kst_now, ensure_kst
 from common.logger import get_logger
-from common.oj.codeforces import get_contest_solved
+from common.oj.codeforces import get_contest_result
 from domain.notion_sync import collect_urls_from_page
 
 logger = get_logger()
@@ -144,28 +144,25 @@ async def score_members(contest_id: str, users: List[dict], threshold: int) -> L
     for u in users:
         handle = u.get('codeforces_handle')
         display = u.get('name') or u.get('username') or 'Unknown'
+        base = {'name': display, 'handle': handle, 'missing': not handle, 'fail': False,
+                'solved': 0, 'passed': False, 'has_virtual': False, 'v_solved': 0, 'v_penalty': 0}
         if not handle:
-            results.append({
-                'name': display, 'handle': None,
-                'solved': 0, 'passed': False, 'missing': True,
-            })
+            results.append(base)
             continue
 
-        solved_set = await get_contest_solved(handle, contest_id)
+        res = await get_contest_result(handle, contest_id)
         await asyncio.sleep(0.5)  # CF 레이트리밋 보호
 
-        if solved_set is None:
-            results.append({
-                'name': display, 'handle': handle,
-                'solved': None, 'passed': False, 'missing': False,
-            })
+        if res is None:
+            results.append({**base, 'fail': True})
             continue
 
-        n = len(solved_set)
-        results.append({
-            'name': display, 'handle': handle,
-            'solved': n, 'passed': n >= threshold, 'missing': False,
-        })
+        results.append({**base,
+                        'solved': res['solved_any'],
+                        'passed': res['solved_any'] >= threshold,
+                        'has_virtual': res['has_virtual'],
+                        'v_solved': res['v_solved'],
+                        'v_penalty': res['v_penalty']})
     return results
 
 
@@ -194,51 +191,45 @@ def build_test_embed(contest_id: str, group_name: str, role_name: str,
 
     embed = discord.Embed(title=title, description=desc, color=color)
 
-    # 통과자 우선, 그 다음 풀이 수 내림차순
-    def sort_key(r):
-        s = r['solved'] if isinstance(r['solved'], int) else -1
-        return (1 if r['passed'] else 0, s)
-    ranked = sorted(results, key=sort_key, reverse=True)
-
-    if not ranked:
+    if not results:
         embed.add_field(name="멤버", value="(없음)", inline=False)
         return embed
 
-    lines = []
-    for i, r in enumerate(ranked[:25]):
+    # ── 섹션 1: 통과 현황 (2문제↑, 풀이 방식 무관) ──
+    pass_sorted = sorted(results, key=lambda r: (r['passed'], r['solved']), reverse=True)
+    plines = []
+    for r in pass_sorted[:30]:
         if r['missing']:
-            lines.append(f"• {r['name']} ⚠️ *(CF 핸들 미등록)*")
-            continue
-        if r['solved'] is None:
-            lines.append(f"• {r['name']} ❌ *(조회 실패)*")
-            continue
-        if i == 0 and r['passed']:
-            emoji = "🥇"
-        elif i == 1 and r['passed']:
-            emoji = "🥈"
-        elif i == 2 and r['passed']:
-            emoji = "🥉"
+            plines.append(f"⚠️ {r['name']} *(CF 핸들 미등록)*")
+        elif r['fail']:
+            plines.append(f"❌ {r['name']} *(조회 실패)*")
         else:
-            emoji = "•"
-        mark = "✅" if r['passed'] else "📝"
-        cnt = f"{r['solved']}/{total_problems}" if total_problems else f"{r['solved']}"
-        lines.append(f"{emoji} {r['name']} {mark} **[{cnt}문제]**")
-
-    if len(ranked) > 25:
-        lines.append(f"... 외 {len(ranked) - 25}명")
-
-    value = "\n".join(lines)
-    if len(value) > 1020:
-        value = value[:1020] + "..."
-    embed.add_field(name="멤버별 현황", value=value, inline=False)
-
+            mark = "✅" if r['passed'] else "📝"
+            plines.append(f"{mark} {r['name']} [{r['solved']}]")
+    pval = "\n".join(plines)
+    if len(pval) > 1020:
+        pval = pval[:1015] + "\n…"
     passed = sum(1 for r in results if r['passed'])
-    scored = sum(1 for r in results if not r['missing'] and r['solved'] is not None)
+    scored = sum(1 for r in results if not r['missing'] and not r['fail'])
     embed.add_field(
-        name="📈 통계",
-        value=f"통과 {passed}명 / 채점 {scored}명 (전체 {len(results)}명)",
-        inline=False,
-    )
+        name=f"✅ 통과 현황 ({threshold}문제↑ · 방식 무관) — {passed}/{scored}명",
+        value=pval or "(없음)", inline=False)
+
+    # ── 섹션 2: 랭킹 (가상참가 기록 · ICPC: 문제수↓, 페널티↑) ──
+    virt = [r for r in results if r['has_virtual']]
+    virt.sort(key=lambda r: (-r['v_solved'], r['v_penalty']))
+    if virt:
+        rlines = []
+        for i, r in enumerate(virt[:25], 1):
+            medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"{i}.")
+            rlines.append(f"{medal} {r['name']}  {r['v_solved']}솔브 · {r['v_penalty']}분")
+        rval = "\n".join(rlines)
+        if len(rval) > 1020:
+            rval = rval[:1015] + "\n…"
+    else:
+        rval = "아직 가상참가(virtual) 기록이 없습니다. CF에서 이 대회를 **가상참가**로 풀면 랭킹에 반영됩니다."
+    embed.add_field(name="🏅 랭킹 (가상참가 · ICPC)", value=rval, inline=False)
+
     return embed
 
 

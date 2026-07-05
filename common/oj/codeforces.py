@@ -93,3 +93,82 @@ async def get_contest_solved(handle: str, contest_id: str) -> Optional[Set[str]]
         if index:
             solved.add(index.upper())
     return solved
+
+
+async def get_contest_result(handle: str, contest_id: str) -> Optional[dict]:
+    """
+    한 번의 user.status 호출로 두 가지를 계산:
+      - 통과용: 대회에서 AC한 distinct 문제 수 (참가유형·시각 무관)
+      - 랭킹용: 가상참가(VIRTUAL) 기록 — ICPC 룰(문제수 + 페널티)
+
+    페널티 = Σ (해결문제의 가상시작~AC 경과분) + 20분 × (AC 전 오답 수)
+    가상참가 종료 후 제출은 CF가 PRACTICE로 바꾸므로, VIRTUAL 제출만 보면
+    자연히 가상 대회 시간 안으로 한정된다. 여러 번 가상참가 시 가장 좋은 회차 채택.
+
+    반환 (None = API 실패):
+      {'solved_any': int, 'has_virtual': bool, 'v_solved': int, 'v_penalty': int}
+    """
+    if not handle or contest_id is None:
+        return None
+    target_cid = str(contest_id)
+    params = {"handle": handle, "from": 1, "count": 10000}
+    timeout = aiohttp.ClientTimeout(total=15)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(API_URL, params=params) as r:
+                data = await r.json(content_type=None)
+    except Exception as e:
+        logger.warning(f"[oj.codeforces] {handle} contest {target_cid} result 실패: {e!r}")
+        return None
+    if data.get("status") != "OK":
+        logger.warning(f"[oj.codeforces] user.status API 에러({handle}): {data.get('comment')}")
+        return None
+
+    solved_any = set()
+    # 가상참가: startTime 별로 {index: [(time, verdict), ...]}
+    virt = {}
+    for sub in data.get("result", []):
+        problem = sub.get("problem", {})
+        if str(problem.get("contestId")) != target_cid:
+            continue
+        index = problem.get("index")
+        if not index:
+            continue
+        index = index.upper()
+        verdict = sub.get("verdict")
+        if verdict == "OK":
+            solved_any.add(index)
+        author = sub.get("author", {})
+        if author.get("participantType") == "VIRTUAL":
+            st = author.get("startTimeSeconds")
+            if st is None:
+                continue
+            virt.setdefault(st, {}).setdefault(index, []).append(
+                (sub.get("creationTimeSeconds", 0), verdict))
+
+    best = None  # (solved, penalty)
+    for st, probs in virt.items():
+        v_solved = 0
+        v_penalty = 0
+        for idx, subs in probs.items():
+            subs.sort(key=lambda x: x[0])
+            wrong = 0
+            ac_time = None
+            for t, v in subs:
+                if v == "OK":
+                    ac_time = t
+                    break
+                if v != "COMPILATION_ERROR":
+                    wrong += 1
+            if ac_time is not None:
+                v_solved += 1
+                v_penalty += max(0, (ac_time - st) // 60) + 20 * wrong
+        if best is None or v_solved > best[0] or (v_solved == best[0] and v_penalty < best[1]):
+            best = (v_solved, v_penalty)
+
+    return {
+        "solved_any": len(solved_any),
+        "has_virtual": best is not None and best[0] > 0,
+        "v_solved": best[0] if best else 0,
+        "v_penalty": best[1] if best else 0,
+    }
