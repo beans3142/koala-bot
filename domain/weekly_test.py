@@ -145,7 +145,8 @@ async def score_members(contest_id: str, users: List[dict], threshold: int) -> L
         handle = u.get('codeforces_handle')
         display = u.get('name') or u.get('username') or 'Unknown'
         base = {'name': display, 'handle': handle, 'missing': not handle, 'fail': False,
-                'solved': 0, 'passed': False, 'has_virtual': False, 'v_solved': 0, 'v_penalty': 0}
+                'solved': 0, 'passed': False, 'has_virtual': False,
+                'v_solved': 0, 'v_penalty': 0, 'v_detail': []}
         if not handle:
             results.append(base)
             continue
@@ -162,7 +163,8 @@ async def score_members(contest_id: str, users: List[dict], threshold: int) -> L
                         'passed': res['solved_any'] >= threshold,
                         'has_virtual': res['has_virtual'],
                         'v_solved': res['v_solved'],
-                        'v_penalty': res['v_penalty']})
+                        'v_penalty': res['v_penalty'],
+                        'v_detail': res.get('v_detail', [])})
     return results
 
 
@@ -220,15 +222,31 @@ def build_test_embed(contest_id: str, group_name: str, role_name: str,
     virt.sort(key=lambda r: (-r['v_solved'], r['v_penalty']))
     if virt:
         rlines = []
-        for i, r in enumerate(virt[:25], 1):
-            medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"{i}.")
-            rlines.append(f"{medal} {r['name']}  {r['v_solved']}솔브 · {r['v_penalty']}분")
+        for i, r in enumerate(virt[:15], 1):
+            medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"`{i}.`")
+            rlines.append(f"{medal} **{r['name']}** — {r['v_solved']}솔브 · {r['v_penalty']}분")
+            # 문제별 상세: 푼 문제(분), 오답만 있는 문제(✗n)
+            toks = []
+            for d in r.get('v_detail', []):
+                if d['solved']:
+                    toks.append(f"`{d['idx']} {d['minute']}′`" + (f"⁽{d['tries']}⁾" if d['tries'] else ""))
+                elif d['tries']:
+                    toks.append(f"~~`{d['idx']} ✗{d['tries']}`~~")
+            if toks:
+                rlines.append("　" + " ".join(toks))
         rval = "\n".join(rlines)
         if len(rval) > 1020:
-            rval = rval[:1015] + "\n…"
+            rval = rval[:1010] + "\n… (이하 생략)"
     else:
         rval = "아직 가상참가(virtual) 기록이 없습니다. CF에서 이 대회를 **가상참가**로 풀면 랭킹에 반영됩니다."
-    embed.add_field(name="🏅 랭킹 (가상참가 · ICPC)", value=rval, inline=False)
+    embed.add_field(
+        name="🏅 랭킹 (가상참가 · ICPC)",
+        value=rval, inline=False)
+    if virt:
+        embed.add_field(
+            name="​",
+            value="※ `문제 분′` = 푼 시각 · `⁽n⁾` = 오답 n회 · ~~`✗n`~~ = 미해결(n오답)",
+            inline=False)
 
     return embed
 

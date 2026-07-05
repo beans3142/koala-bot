@@ -146,12 +146,13 @@ async def get_contest_result(handle: str, contest_id: str) -> Optional[dict]:
             virt.setdefault(st, {}).setdefault(index, []).append(
                 (sub.get("creationTimeSeconds", 0), verdict))
 
-    best = None  # (solved, penalty)
+    best = None  # {'solved','penalty','detail'}
     for st, probs in virt.items():
         v_solved = 0
         v_penalty = 0
-        for idx, subs in probs.items():
-            subs.sort(key=lambda x: x[0])
+        detail = []  # [{'idx','solved','minute','tries'}]
+        for idx in sorted(probs):
+            subs = sorted(probs[idx], key=lambda x: x[0])
             wrong = 0
             ac_time = None
             for t, v in subs:
@@ -161,14 +162,20 @@ async def get_contest_result(handle: str, contest_id: str) -> Optional[dict]:
                 if v != "COMPILATION_ERROR":
                     wrong += 1
             if ac_time is not None:
+                minute = int(max(0, (ac_time - st) // 60))
                 v_solved += 1
-                v_penalty += max(0, (ac_time - st) // 60) + 20 * wrong
-        if best is None or v_solved > best[0] or (v_solved == best[0] and v_penalty < best[1]):
-            best = (v_solved, v_penalty)
+                v_penalty += minute + 20 * wrong
+                detail.append({"idx": idx, "solved": True, "minute": minute, "tries": wrong})
+            else:
+                detail.append({"idx": idx, "solved": False, "minute": None, "tries": wrong})
+        if (best is None or v_solved > best["solved"]
+                or (v_solved == best["solved"] and v_penalty < best["penalty"])):
+            best = {"solved": v_solved, "penalty": v_penalty, "detail": detail}
 
     return {
         "solved_any": len(solved_any),
-        "has_virtual": best is not None and best[0] > 0,
-        "v_solved": best[0] if best else 0,
-        "v_penalty": best[1] if best else 0,
+        "has_virtual": best is not None and best["solved"] > 0,
+        "v_solved": best["solved"] if best else 0,
+        "v_penalty": best["penalty"] if best else 0,
+        "v_detail": best["detail"] if best else [],
     }
