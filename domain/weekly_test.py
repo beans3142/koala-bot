@@ -43,6 +43,13 @@ logger = get_logger()
 DEFAULT_THRESHOLD = 2  # 통과 기준 문제 수
 _bot_for_scheduler = None
 
+_SUP = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
+
+
+def _superscript(n: int) -> str:
+    """오답 횟수를 위첨자 문자열로 (예: 4 → ⁴)."""
+    return str(int(n)).translate(_SUP)
+
 
 # ==================== 기간 계산 (주말 윈도우) ====================
 
@@ -223,29 +230,31 @@ def build_test_embed(contest_id: str, group_name: str, role_name: str,
     if virt:
         rlines = []
         for i, r in enumerate(virt[:15], 1):
-            medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"`{i}.`")
+            medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(i, f"{i}.")
             rlines.append(f"{medal} **{r['name']}** — {r['v_solved']}솔브 · {r['v_penalty']}분")
-            # 문제별 상세: 푼 문제(분), 오답만 있는 문제(✗n)
-            toks = []
+            solved_toks = []
+            failed = []
             for d in r.get('v_detail', []):
                 if d['solved']:
-                    toks.append(f"`{d['idx']} {d['minute']}′`" + (f"⁽{d['tries']}⁾" if d['tries'] else ""))
+                    sup = _superscript(d['tries']) if d['tries'] else ""
+                    solved_toks.append(f"{d['idx']} {d['minute']}′{sup}")
                 elif d['tries']:
-                    toks.append(f"~~`{d['idx']} ✗{d['tries']}`~~")
-            if toks:
-                rlines.append("　" + " ".join(toks))
+                    failed.append(d['idx'])
+            detail = "　" + " · ".join(solved_toks) if solved_toks else ""
+            if failed:
+                detail += ("　　✗ " if solved_toks else "　✗ ") + " ".join(failed)
+            if detail:
+                rlines.append(detail)
         rval = "\n".join(rlines)
         if len(rval) > 1020:
             rval = rval[:1010] + "\n… (이하 생략)"
     else:
         rval = "아직 가상참가(virtual) 기록이 없습니다. CF에서 이 대회를 **가상참가**로 풀면 랭킹에 반영됩니다."
-    embed.add_field(
-        name="🏅 랭킹 (가상참가 · ICPC)",
-        value=rval, inline=False)
+    embed.add_field(name="🏅 랭킹 (가상참가 · ICPC)", value=rval, inline=False)
     if virt:
         embed.add_field(
             name="​",
-            value="※ `문제 분′` = 푼 시각 · `⁽n⁾` = 오답 n회 · ~~`✗n`~~ = 미해결(n오답)",
+            value="분′ = 해결 시각 · 위첨자 = 오답 횟수 · ✗ = 미해결",
             inline=False)
 
     return embed
